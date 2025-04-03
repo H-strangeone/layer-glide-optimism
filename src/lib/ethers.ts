@@ -1,5 +1,5 @@
 
-import { BrowserProvider, Contract, formatEther, parseEther } from "ethers";
+import { Contract, providers, utils } from "ethers";
 import { toast } from "@/components/ui/use-toast";
 
 // Layer2Scaling contract ABI
@@ -51,28 +51,35 @@ export const NETWORK_SETTINGS = {
   },
 };
 
+// Define a type for window with ethereum property
+declare global {
+  interface Window {
+    ethereum?: any;
+  }
+}
+
 // Ethers provider setup
 export const getProvider = async () => {
   if (!window.ethereum) {
     throw new Error("MetaMask is not installed");
   }
-  return new BrowserProvider(window.ethereum);
+  return new providers.Web3Provider(window.ethereum);
 };
 
 // Connect to wallet
 export const connectWallet = async () => {
   try {
     const provider = await getProvider();
-    const accounts = await provider.send("eth_requestAccounts", []);
+    const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
     
     if (accounts.length === 0) {
       throw new Error("No accounts found");
     }
     
     // Get network information
-    const { chainId } = await provider.getNetwork();
+    const network = await provider.getNetwork();
     const networkName = Object.keys(NETWORK_SETTINGS).find(
-      (network) => NETWORK_SETTINGS[network].chainId === chainId.toString(16)
+      (net) => parseInt(NETWORK_SETTINGS[net as keyof typeof NETWORK_SETTINGS].chainId, 16) === network.chainId
     ) || "unknown";
     
     return { 
@@ -93,22 +100,24 @@ export const connectWallet = async () => {
 // Switch network
 export const switchNetwork = async (networkName: "sepolia" | "localhost") => {
   try {
-    const provider = await getProvider();
     const network = NETWORK_SETTINGS[networkName];
     
-    await provider.send("wallet_switchEthereumChain", [
-      { chainId: network.chainId },
-    ]);
+    await window.ethereum.request({
+      method: "wallet_switchEthereumChain",
+      params: [{ chainId: network.chainId }],
+    });
     
     return true;
   } catch (error: any) {
     // Handle the case where the network needs to be added
     if (error.code === 4902) {
       try {
-        const provider = await getProvider();
         const network = NETWORK_SETTINGS[networkName];
         
-        await provider.send("wallet_addEthereumChain", [network]);
+        await window.ethereum.request({
+          method: "wallet_addEthereumChain",
+          params: [network],
+        });
         return true;
       } catch (addError) {
         console.error("Error adding network:", addError);
@@ -124,7 +133,7 @@ export const switchNetwork = async (networkName: "sepolia" | "localhost") => {
 // Get contract instance
 export const getContract = async (networkName: "sepolia" | "localhost" = "sepolia") => {
   const provider = await getProvider();
-  const signer = await provider.getSigner();
+  const signer = provider.getSigner();
   return new Contract(CONTRACT_ADDRESS[networkName], contractABI, signer);
 };
 
@@ -138,8 +147,8 @@ export const getUserBalance = async (address: string) => {
     const l2Balance = await contract.balances(address);
     
     return {
-      ethBalance: formatEther(ethBalance),
-      l2Balance: formatEther(l2Balance),
+      ethBalance: utils.formatEther(ethBalance),
+      l2Balance: utils.formatEther(l2Balance),
     };
   } catch (error) {
     console.error("Error getting balance:", error);
@@ -151,7 +160,7 @@ export const getUserBalance = async (address: string) => {
 export const depositFunds = async (amount: string) => {
   try {
     const contract = await getContract();
-    const tx = await contract.depositFunds({ value: parseEther(amount) });
+    const tx = await contract.depositFunds({ value: utils.parseEther(amount) });
     return await tx.wait();
   } catch (error) {
     console.error("Error depositing funds:", error);
@@ -163,7 +172,7 @@ export const depositFunds = async (amount: string) => {
 export const withdrawFunds = async (amount: string) => {
   try {
     const contract = await getContract();
-    const tx = await contract.withdrawFunds(parseEther(amount));
+    const tx = await contract.withdrawFunds(utils.parseEther(amount));
     return await tx.wait();
   } catch (error) {
     console.error("Error withdrawing funds:", error);
@@ -188,13 +197,15 @@ export const batchTransfer = async (recipients: string[], amounts: string[]) => 
   try {
     const contract = await getContract();
     const totalAmount = amounts.reduce(
-      (sum, amount) => sum + parseEther(amount),
-      BigInt(0)
+      (sum, amount) => sum.add(utils.parseEther(amount)),
+      utils.parseEther("0")
     );
     
-    const tx = await contract.batchTransfer(recipients, amounts.map(parseEther), {
-      value: totalAmount,
-    });
+    const tx = await contract.batchTransfer(
+      recipients, 
+      amounts.map(a => utils.parseEther(a)), 
+      { value: totalAmount }
+    );
     
     return await tx.wait();
   } catch (error) {
@@ -230,7 +241,7 @@ export const reportFraud = async (
       {
         sender: transaction.sender,
         recipient: transaction.recipient,
-        amount: parseEther(transaction.amount),
+        amount: utils.parseEther(transaction.amount),
       },
       merkleProof
     );

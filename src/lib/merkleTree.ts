@@ -1,5 +1,5 @@
 
-import { keccak256 } from 'ethers';
+import { utils } from "ethers";
 
 export interface Transaction {
   sender: string;
@@ -24,7 +24,7 @@ export class MerkleTree {
       amount: transaction.amount
     });
     
-    return keccak256(Buffer.from(encodedData));
+    return utils.keccak256(Buffer.from(encodedData));
   }
 
   private buildTree(): void {
@@ -58,7 +58,7 @@ export class MerkleTree {
       Buffer.from(sortedHashes[1].slice(2), 'hex')
     ]);
     
-    return keccak256(concatenated);
+    return utils.keccak256(concatenated);
   }
 
   getRoot(): string {

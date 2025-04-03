@@ -1,9 +1,9 @@
-
 import Navbar from "@/components/Navbar";
 import NetworkStatus from "@/components/NetworkStatus";
 import BatchSubmission from "@/components/BatchSubmission";
 import TransactionTracker from "@/components/TransactionTracker";
 import DepositCard from "@/components/DepositCard";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useState, useEffect } from "react";
 
 const Index = () => {
