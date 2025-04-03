@@ -5,14 +5,18 @@ import BatchSubmission from "@/components/BatchSubmission";
 import TransactionTracker from "@/components/TransactionTracker";
 import DepositCard from "@/components/DepositCard";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { useState, useEffect } from "react";
-import { getNetworkName } from "@/lib/ethers";
+import { getNetworkName, connectWallet, switchNetwork } from "@/lib/ethers";
+import { toast } from "@/components/ui/use-toast";
 
 const Index = () => {
   const [wallet, setWallet] = useState<{
     address: string;
     network: string;
   } | null>(null);
+  
+  const [isConnecting, setIsConnecting] = useState(false);
 
   useEffect(() => {
     // Check if wallet is connected (using window.ethereum)
@@ -53,6 +57,42 @@ const Index = () => {
     console.log("Deposit successful, refreshing data...");
   };
 
+  const handleConnectWallet = async () => {
+    try {
+      setIsConnecting(true);
+      const result = await connectWallet();
+      setWallet({
+        address: result.address,
+        network: result.network,
+      });
+      
+      if (result.network !== "sepolia") {
+        toast({
+          title: "Wrong Network",
+          description: "Please switch to Sepolia network",
+          variant: "destructive",
+        });
+        
+        const switched = await switchNetwork("sepolia");
+        if (switched) {
+          toast({
+            title: "Network Switched",
+            description: "Successfully connected to Sepolia",
+          });
+        }
+      }
+    } catch (error) {
+      console.error("Connection error:", error);
+      toast({
+        title: "Connection Error",
+        description: error instanceof Error ? error.message : "Failed to connect wallet",
+        variant: "destructive",
+      });
+    } finally {
+      setIsConnecting(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-l2-bg">
       <div className="container mx-auto px-4 pb-12">
@@ -79,9 +119,17 @@ const Index = () => {
             ) : (
               <div className="glass-card w-full mt-6 p-8 text-center">
                 <h2 className="text-xl mb-4">Connect Your Wallet</h2>
-                <p className="text-white/70">
-                  Connect your MetaMask wallet to use the Layer 2 features
+                <p className="text-white/70 mb-6">
+                  Connect your MetaMask wallet to use the Layer 2 features.
+                  Make sure you have set up your .env file with your Alchemy API key and private key.
                 </p>
+                <Button 
+                  onClick={handleConnectWallet} 
+                  disabled={isConnecting}
+                  className="bg-gradient-to-r from-l2-primary to-l2-secondary hover:opacity-90"
+                >
+                  {isConnecting ? "Connecting..." : "Connect Wallet"}
+                </Button>
               </div>
             )}
           </div>
