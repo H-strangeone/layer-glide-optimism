@@ -1,45 +1,121 @@
-
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import React, { useEffect, useState } from 'react';
+import { useAccount } from 'wagmi';
+import { getTransactionHistory, getGasPrice, TransactionStatus, TransactionHistory, TransactionEvent, TransactionReceipt } from '@/lib/ethers';
+import { formatEther } from 'ethers';
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
-import { fetchTransactionStatus, getMockTransactionStatus, TransactionStatus } from "@/lib/api";
-import { useEffect, useState } from "react";
+import { getTransactionStatus, subscribeToTransactionEvents } from "@/lib/ethers";
 
 interface TransactionTrackerProps {
-  address?: string;
+  address: string;
 }
 
-const TransactionTracker = ({ address }: TransactionTrackerProps) => {
-  const [transactions, setTransactions] = useState<TransactionStatus[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+export default function TransactionTracker({ address }: TransactionTrackerProps) {
+  const [transactions, setTransactions] = useState<TransactionHistory[]>([]);
+  const [gasPrice, setGasPrice] = useState<string>('0');
+  const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("all");
 
+  const fetchData = async () => {
+    if (!address) return;
+
+    try {
+      setLoading(true);
+      const txHistory = await getTransactionHistory(address);
+      setTransactions(txHistory);
+    } catch (error) {
+      console.error("Error fetching transaction data:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
+    if (address) {
+      fetchData();
+      // Refresh every 10 seconds
+      const interval = setInterval(fetchData, 10000);
+      return () => clearInterval(interval);
+    }
+  }, [address]);
+
+  useEffect(() => {
+    let unsubscribe: (() => void) | undefined;
+
     const loadTransactions = async () => {
-      setIsLoading(true);
+      if (!address) return;
+
+      setLoading(true);
       try {
-        if (address) {
-          // In a real implementation, this would fetch from the backend
-          // const result = await fetchTransactionStatus(address);
-          
-          // Using mock data for demo
-          const result = getMockTransactionStatus(address);
-          setTransactions(result);
+        // Subscribe to transaction events
+        unsubscribe = await subscribeToTransactionEvents(async (event: TransactionEvent) => {
+          if (event.eventName === "TransactionSubmitted") {
+            const tx = event.args;
+            const receipt = await getTransactionStatus(tx.transactionHash);
+
+            setTransactions(prev => {
+              const existingTx = prev.find(t => t.hash === tx.transactionHash);
+              if (existingTx) {
+                return prev.map(t =>
+                  t.hash === tx.transactionHash
+                    ? { ...t, status: receipt.status, gasPrice: receipt.effectiveGasPrice ? formatEther(receipt.effectiveGasPrice) : t.gasPrice }
+                    : t
+                );
+              }
+
+              return [{
+                hash: tx.transactionHash,
+                from: tx.from,
+                to: tx.to,
+                value: formatEther(tx.value),
+                status: receipt.status,
+                gasPrice: receipt.effectiveGasPrice ? formatEther(receipt.effectiveGasPrice) : '0',
+                timestamp: Date.now()
+              }, ...prev];
+            });
+          }
+        });
+
+        // Load initial transactions from localStorage
+        const savedTransactions = localStorage.getItem(`transactions_${address}`);
+        if (savedTransactions) {
+          const parsedTransactions = JSON.parse(savedTransactions);
+          setTransactions(parsedTransactions);
+
+          // Update status for all transactions
+          for (const tx of parsedTransactions) {
+            const receipt = await getTransactionStatus(tx.hash);
+            setTransactions(prev =>
+              prev.map(t =>
+                t.hash === tx.hash
+                  ? { ...t, status: receipt.status, gasPrice: receipt.effectiveGasPrice ? formatEther(receipt.effectiveGasPrice) : t.gasPrice }
+                  : t
+              )
+            );
+          }
         }
       } catch (error) {
         console.error("Failed to load transactions:", error);
       } finally {
-        setIsLoading(false);
+        setLoading(false);
       }
     };
 
     loadTransactions();
-    
-    // Refresh every 30 seconds
-    const interval = setInterval(loadTransactions, 30000);
-    
-    return () => clearInterval(interval);
+
+    // Save transactions to localStorage when they change
+    const saveInterval = setInterval(() => {
+      if (address) {
+        localStorage.setItem(`transactions_${address}`, JSON.stringify(transactions));
+      }
+    }, 30000); // Save every 30 seconds
+
+    return () => {
+      if (unsubscribe) unsubscribe();
+      clearInterval(saveInterval);
+    };
   }, [address]);
 
   const filteredTransactions = transactions.filter((tx) => {
@@ -47,72 +123,85 @@ const TransactionTracker = ({ address }: TransactionTrackerProps) => {
     return tx.status === activeTab;
   });
 
-  const getStatusBadge = (status: string) => {
+  const formatAddress = (addr: string) => {
+    return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
+  };
+
+  const getStatusColor = (status: string) => {
     switch (status) {
-      case "pending":
-        return <Badge variant="outline" className="border-yellow-500 text-yellow-500">Pending</Badge>;
-      case "confirmed":
-        return <Badge variant="outline" className="border-green-500 text-green-500">Confirmed</Badge>;
-      case "failed":
-        return <Badge variant="outline" className="border-red-500 text-red-500">Failed</Badge>;
+      case 'confirmed':
+        return 'text-green-500';
+      case 'pending':
+        return 'text-yellow-500';
+      case 'failed':
+        return 'text-red-500';
       default:
-        return <Badge variant="outline">Unknown</Badge>;
+        return 'text-gray-500';
     }
   };
 
   return (
-    <Card className="glass-card w-full mt-6">
+    <Card className="w-full">
       <CardHeader>
-        <CardTitle className="text-2xl text-l2-secondary">Transaction Status</CardTitle>
-        <CardDescription>Track your L2 transactions and their current status</CardDescription>
+        <CardTitle>Transaction History</CardTitle>
       </CardHeader>
       <CardContent>
-        <Tabs defaultValue="all" value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="grid grid-cols-4 mb-6 glass-card">
-            <TabsTrigger value="all">All</TabsTrigger>
-            <TabsTrigger value="pending">Pending</TabsTrigger>
-            <TabsTrigger value="confirmed">Confirmed</TabsTrigger>
-            <TabsTrigger value="failed">Failed</TabsTrigger>
-          </TabsList>
-          
-          <TabsContent value={activeTab}>
-            {isLoading ? (
-              <div className="py-8 text-center text-white/60">Loading transactions...</div>
-            ) : filteredTransactions.length === 0 ? (
-              <div className="py-8 text-center text-white/60">No transactions found</div>
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-white/10">
-                    <TableHead className="text-white/70">TX Hash</TableHead>
-                    <TableHead className="text-white/70">Recipient</TableHead>
-                    <TableHead className="text-white/70">Amount</TableHead>
-                    <TableHead className="text-white/70">Timestamp</TableHead>
-                    <TableHead className="text-white/70">Status</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filteredTransactions.map((tx) => (
-                    <TableRow key={tx.id} className="border-white/10">
-                      <TableCell className="font-mono">
-                        {tx.hash.slice(0, 6)}...{tx.hash.slice(-4)}
-                      </TableCell>
-                      <TableCell className="font-mono">
-                        {tx.to.slice(0, 6)}...{tx.to.slice(-4)}
-                      </TableCell>
-                      <TableCell>{tx.amount} ETH</TableCell>
-                      <TableCell>{new Date(tx.timestamp).toLocaleString()}</TableCell>
-                      <TableCell>{getStatusBadge(tx.status)}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
-          </TabsContent>
-        </Tabs>
+        {loading ? (
+          <p className="text-center py-4">Loading transactions...</p>
+        ) : transactions.length === 0 ? (
+          <p className="text-center py-4">No transactions found</p>
+        ) : (
+          <div className="space-y-4">
+            {transactions.map((tx) => (
+              <div
+                key={tx.hash}
+                className="border rounded-lg p-4 hover:bg-gray-50 transition-colors"
+              >
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-sm font-medium">Transaction Hash</p>
+                    <p className="text-xs text-blue-500 truncate">
+                      <a
+                        href={`https://sepolia.etherscan.io/tx/${tx.hash}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        {formatAddress(tx.hash)}
+                      </a>
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium">Status</p>
+                    <p className={`text-xs ${getStatusColor(tx.status)}`}>
+                      {tx.status.charAt(0).toUpperCase() + tx.status.slice(1)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium">From</p>
+                    <p className="text-xs text-gray-500 truncate">{formatAddress(tx.from)}</p>
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium">To</p>
+                    <p className="text-xs text-gray-500 truncate">{formatAddress(tx.to)}</p>
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium">Amount</p>
+                    <p className="text-xs text-gray-500">
+                      {formatEther(tx.value)} ETH
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium">Gas Price</p>
+                    <p className="text-xs text-gray-500">
+                      {formatEther(tx.gasPrice)} ETH
+                    </p>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </CardContent>
     </Card>
   );
-};
-
-export default TransactionTracker;
+}

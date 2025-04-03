@@ -1,0 +1,43 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Transaction {
+  id              String   @id @default(cuid())
+  hash            String   @unique
+  from            String
+  to              String
+  amount          String
+  timestamp       DateTime @default(now())
+  status          String   // "pending", "completed", "failed"
+  type            String   // "deposit", "withdraw", "transfer"
+  layer           String   // "layer1", "layer2"
+  batchId         Int?
+  merkleProof     String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model Balance {
+  id        String   @id @default(cuid())
+  address   String   @unique
+  layer1    String   @default("0")
+  layer2    String   @default("0")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Batch {
+  id              String   @id @default(cuid())
+  batchId         Int      @unique
+  transactionsRoot String
+  timestamp       DateTime @default(now())
+  status          String   // "pending", "verified", "finalized"
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+} 

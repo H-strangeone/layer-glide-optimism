@@ -1,105 +1,108 @@
-
+import React, { useEffect, useState } from 'react';
+import { getGasPrice, getBatches, getProvider } from '@/lib/ethers';
+import { formatUnits } from 'ethers';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { useEffect, useState } from "react";
 
-interface NetworkStatusProps {
-  network?: string;
-}
+export function NetworkStatus() {
+  const [networkInfo, setNetworkInfo] = useState({
+    gasPrice: "0",
+    blockHeight: 0,
+    batchCount: 0,
+    pendingTxs: 0,
+    networkName: "Unknown",
+  });
+  const [loading, setLoading] = useState(true);
 
-const NetworkStatus = ({ network = "Unknown" }: NetworkStatusProps) => {
-  const [gasPrice, setGasPrice] = useState("0");
-  const [blockHeight, setBlockHeight] = useState(0);
-  const [batchCount, setBatchCount] = useState(0);
-  const [pendingTransactions, setPendingTransactions] = useState(0);
-  const [l2ProcessingTime, setL2ProcessingTime] = useState("~2 seconds");
-  const [l1FinalityTime, setL1FinalityTime] = useState("~15 minutes");
-  
-  // Simulate fetching network stats
+  const getNetworkName = async (chainId: string) => {
+    const chainIdNum = parseInt(chainId, 16);
+    switch (chainIdNum) {
+      case 31337:
+        return "Hardhat";
+      case 11155111:
+        return "Sepolia";
+      default:
+        return `Chain ${chainIdNum}`;
+    }
+  };
+
+  const fetchData = async () => {
+    try {
+      setLoading(true);
+      const provider = await getProvider();
+
+      // Get network info
+      const chainId = await provider.send('eth_chainId', []);
+      const networkName = await getNetworkName(chainId);
+
+      // Get gas price (returns hex string)
+      const gasPriceHex = await getGasPrice();
+      // Convert hex gas price to gwei
+      const gasPriceGwei = formatUnits(gasPriceHex, 'gwei');
+
+      // Get latest block
+      const blockNumber = await provider.getBlockNumber();
+
+      // Get batch count
+      const batches = await getBatches();
+
+      // Get pending transactions (simplified)
+      const block = await provider.getBlock('latest');
+      const pendingTxs = block?.transactions?.length || 0;
+
+      setNetworkInfo({
+        gasPrice: gasPriceGwei,
+        blockHeight: blockNumber,
+        batchCount: batches.length,
+        pendingTxs,
+        networkName,
+      });
+    } catch (error) {
+      console.error("Error fetching network status:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
-    // In a real implementation, fetch this data from backend/blockchain
-    setGasPrice("25");
-    setBlockHeight(4758291);
-    setBatchCount(154);
-    setPendingTransactions(12);
-    
-    // Simulating updates
-    const interval = setInterval(() => {
-      setBlockHeight(prev => prev + 1);
-      setPendingTransactions(Math.floor(Math.random() * 20));
-    }, 15000);
-    
+    fetchData();
+    const interval = setInterval(fetchData, 5000); // Update every 5 seconds
     return () => clearInterval(interval);
   }, []);
-  
+
   return (
-    <Card className="glass-card w-full">
+    <Card className="w-full">
       <CardHeader>
-        <CardTitle className="text-2xl bg-gradient-to-r from-l2-primary to-l2-secondary bg-clip-text text-transparent">
-          Layer 2 Network Status
-        </CardTitle>
-        <CardDescription>
-          Current status of the Optimistic Rollup network
-        </CardDescription>
+        <CardTitle>Network Status</CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div className="space-y-4">
+        {loading ? (
+          <p>Loading network status...</p>
+        ) : (
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             <div>
-              <div className="flex justify-between mb-1">
-                <span className="text-sm text-white/70">Network</span>
-                <span className="text-sm font-medium">{network}</span>
-              </div>
-              <div className="flex justify-between mb-1">
-                <span className="text-sm text-white/70">Gas Price</span>
-                <span className="text-sm font-medium">{gasPrice} Gwei</span>
-              </div>
-              <div className="flex justify-between mb-1">
-                <span className="text-sm text-white/70">Current Block</span>
-                <span className="text-sm font-medium">{blockHeight.toLocaleString()}</span>
-              </div>
-              <div className="flex justify-between mb-1">
-                <span className="text-sm text-white/70">Batches Processed</span>
-                <span className="text-sm font-medium">{batchCount}</span>
-              </div>
+              <p className="text-sm font-medium">Network</p>
+              <p className="text-2xl font-bold">{networkInfo.networkName}</p>
             </div>
-            
             <div>
-              <div className="flex justify-between mb-1">
-                <span className="text-sm text-white/70">Pending Transactions</span>
-                <span className="text-sm font-medium">{pendingTransactions}</span>
-              </div>
-              <Progress value={pendingTransactions * 5} className="h-2 bg-white/10" />
+              <p className="text-sm font-medium">Gas Price</p>
+              <p className="text-2xl font-bold">{parseFloat(networkInfo.gasPrice).toFixed(2)} Gwei</p>
+            </div>
+            <div>
+              <p className="text-sm font-medium">Block Height</p>
+              <p className="text-2xl font-bold">{networkInfo.blockHeight}</p>
+            </div>
+            <div>
+              <p className="text-sm font-medium">Batch Count</p>
+              <p className="text-2xl font-bold">{networkInfo.batchCount}</p>
+            </div>
+            <div>
+              <p className="text-sm font-medium">Pending Transactions</p>
+              <p className="text-2xl font-bold">{networkInfo.pendingTxs}</p>
             </div>
           </div>
-          
-          <div className="space-y-4">
-            <div className="bg-black/20 p-4 rounded-lg border border-white/5">
-              <h4 className="text-sm font-medium mb-2">Processing Times</h4>
-              <div className="space-y-2">
-                <div className="flex justify-between">
-                  <span className="text-xs text-white/70">L2 Confirmation</span>
-                  <span className="text-xs font-medium text-l2-primary">{l2ProcessingTime}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-xs text-white/70">L1 Finality</span>
-                  <span className="text-xs font-medium text-l2-secondary">{l1FinalityTime}</span>
-                </div>
-              </div>
-            </div>
-            
-            <div className="bg-black/20 p-4 rounded-lg border border-white/5">
-              <h4 className="text-sm font-medium mb-2">Optimistic Rollup</h4>
-              <p className="text-xs text-white/70">
-                Transactions are executed off-chain and then batched to Ethereum. 
-                A 7-day challenge period allows for fraud proofs to ensure correctness.
-              </p>
-            </div>
-          </div>
-        </div>
+        )}
       </CardContent>
     </Card>
   );
-};
-
-export default NetworkStatus;
+}

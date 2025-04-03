@@ -1,104 +1,80 @@
-
-import { Button } from "@/components/ui/button";
+import { useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { useToast } from "@/components/ui/use-toast";
+import { Button } from "@/components/ui/button";
 import { depositFunds } from "@/lib/ethers";
-import { useState } from "react";
+import { toast } from "@/components/ui/use-toast";
 
 interface DepositCardProps {
-  address?: string;
-  onDepositSuccess?: () => void;
+  onSuccess?: () => void;
 }
 
-const DepositCard = ({ address, onDepositSuccess }: DepositCardProps) => {
+export default function DepositCard({ onSuccess }: DepositCardProps) {
   const [amount, setAmount] = useState("");
-  const [isDepositing, setIsDepositing] = useState(false);
-  const { toast } = useToast();
+  const [isLoading, setIsLoading] = useState(false);
 
   const handleDeposit = async () => {
-    if (!address) {
+    if (!amount || parseFloat(amount) <= 0) {
       toast({
-        title: "Wallet Not Connected",
-        description: "Please connect your wallet to deposit funds",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    if (!amount || isNaN(Number(amount)) || Number(amount) <= 0) {
-      toast({
-        title: "Invalid Amount",
+        title: "Invalid amount",
         description: "Please enter a valid amount greater than 0",
         variant: "destructive",
       });
       return;
     }
 
+    setIsLoading(true);
     try {
-      setIsDepositing(true);
       await depositFunds(amount);
       toast({
-        title: "Deposit Successful",
-        description: `Successfully deposited ${amount} ETH to Layer 2`,
+        title: "Success",
+        description: `Successfully deposited ${amount} ETH`,
       });
       setAmount("");
-      if (onDepositSuccess) {
-        onDepositSuccess();
+      if (onSuccess) {
+        onSuccess();
       }
     } catch (error) {
       console.error("Deposit error:", error);
       toast({
-        title: "Deposit Failed",
+        title: "Error",
         description: error instanceof Error ? error.message : "Failed to deposit funds",
         variant: "destructive",
       });
     } finally {
-      setIsDepositing(false);
+      setIsLoading(false);
     }
   };
 
   return (
-    <Card className="glass-card w-full">
+    <Card className="w-full">
       <CardHeader>
-        <CardTitle className="text-xl text-white">Deposit to Layer 2</CardTitle>
-        <CardDescription>Move your funds to Layer 2 for faster and cheaper transactions</CardDescription>
+        <CardTitle>Deposit to Layer 2</CardTitle>
+        <CardDescription>
+          Deposit ETH from Layer 1 to Layer 2
+        </CardDescription>
       </CardHeader>
       <CardContent>
-        <div className="space-y-4">
-          <div>
-            <label className="text-sm text-white/70 mb-1 block">Amount (ETH)</label>
+        <div className="flex flex-col space-y-4">
+          <div className="flex space-x-4">
             <Input
               type="number"
-              placeholder="0.01"
+              placeholder="Amount in ETH"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
               min="0"
-              step="0.0001"
-              className="bg-black/20 border-white/10"
-              disabled={!address || isDepositing}
+              step="0.01"
+              disabled={isLoading}
             />
-          </div>
-          
-          <div className="pt-2">
             <Button
               onClick={handleDeposit}
-              disabled={!address || isDepositing}
-              className="w-full bg-gradient-to-r from-l2-primary to-l2-secondary text-white"
+              disabled={isLoading || !amount}
             >
-              {isDepositing ? "Depositing..." : "Deposit to Layer 2"}
+              {isLoading ? "Depositing..." : "Deposit"}
             </Button>
-          </div>
-          
-          <div className="text-xs text-white/60 pt-2">
-            <p>• Deposits are processed immediately</p>
-            <p>• Funds will be available on Layer 2 after 1 block confirmation</p>
-            <p>• Gas fees will apply for the deposit transaction</p>
           </div>
         </div>
       </CardContent>
     </Card>
   );
-};
-
-export default DepositCard;
+}

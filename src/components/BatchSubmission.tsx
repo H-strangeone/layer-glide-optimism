@@ -1,22 +1,26 @@
-
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/components/ui/use-toast";
-import { batchTransfer } from "@/lib/ethers";
+import { batchTransfer, submitBatch } from "@/lib/ethers";
 import { submitTransactions } from "@/lib/api";
 import { useEffect, useState } from "react";
+import { createMerkleTreeFromTransactions, Transaction } from "@/lib/merkleTree";
 
-interface Transaction {
+interface BatchSubmissionProps {
+  onSuccess?: () => void;
+}
+
+interface BatchTransaction {
   recipient: string;
   amount: string;
 }
 
-const BatchSubmission = () => {
+const BatchSubmission = ({ onSuccess }: BatchSubmissionProps) => {
   const [recipient, setRecipient] = useState("");
   const [amount, setAmount] = useState("");
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [transactions, setTransactions] = useState<BatchTransaction[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [gasEstimate, setGasEstimate] = useState("0.0001");
   const { toast } = useToast();
@@ -28,19 +32,10 @@ const BatchSubmission = () => {
   }, [transactions]);
 
   const handleAddTransaction = () => {
-    if (!recipient) {
+    if (!recipient || !amount || isNaN(Number(amount)) || Number(amount) <= 0) {
       toast({
-        title: "Invalid Recipient",
-        description: "Please enter a valid recipient address",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    if (!amount || isNaN(Number(amount)) || Number(amount) <= 0) {
-      toast({
-        title: "Invalid Amount",
-        description: "Please enter a valid amount greater than 0",
+        title: "Invalid Input",
+        description: "Please enter a valid recipient address and amount",
         variant: "destructive",
       });
       return;
@@ -65,37 +60,38 @@ const BatchSubmission = () => {
       return;
     }
 
+    setIsSubmitting(true);
     try {
-      setIsSubmitting(true);
+      // Convert BatchTransactions to Merkle tree Transactions
+      const merkleTransactions: Transaction[] = transactions.map(tx => ({
+        sender: window.ethereum.selectedAddress,
+        recipient: tx.recipient,
+        amount: tx.amount
+      }));
 
-      // Convert transactions for the smart contract
-      const recipients = transactions.map((tx) => tx.recipient);
-      const amounts = transactions.map((tx) => tx.amount);
+      // Create Merkle tree and get root
+      const merkleTree = createMerkleTreeFromTransactions(merkleTransactions);
+      const root = merkleTree.getRoot();
 
-      // Submit to the smart contract
-      await batchTransfer(recipients, amounts);
-
-      // Submit to the backend for off-chain processing
-      await submitTransactions(
-        transactions.map((tx) => ({
-          sender: window.ethereum.selectedAddress,
-          recipient: tx.recipient,
-          amount: tx.amount,
-        }))
-      );
+      // Submit batch with Merkle root
+      await submitBatch([root]);
 
       toast({
-        title: "Batch Submitted",
-        description: `Successfully submitted ${transactions.length} transactions to L2`,
+        title: "Success",
+        description: "Batch submitted successfully",
       });
 
-      // Clear the form
+      // Clear transactions after successful submission
       setTransactions([]);
+
+      if (onSuccess) {
+        onSuccess();
+      }
     } catch (error) {
-      console.error("Batch submission error:", error);
+      console.error("Error submitting batch:", error);
       toast({
-        title: "Submission Failed",
-        description: error instanceof Error ? error.message : "Failed to submit transactions",
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to submit batch",
         variant: "destructive",
       });
     } finally {
@@ -141,9 +137,9 @@ const BatchSubmission = () => {
           </div>
 
           <div className="flex justify-end">
-            <Button 
-              onClick={handleAddTransaction} 
-              variant="outline" 
+            <Button
+              onClick={handleAddTransaction}
+              variant="outline"
               className="border-l2-primary text-l2-primary"
             >
               Add Transaction
