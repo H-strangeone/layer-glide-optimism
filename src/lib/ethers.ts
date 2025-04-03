@@ -1,5 +1,6 @@
 
-import { Contract, providers, utils } from "ethers";
+import { BrowserProvider, Contract, formatEther, parseEther } from "ethers";
+
 import { toast } from "@/components/ui/use-toast";
 
 // Layer2Scaling contract ABI
@@ -21,8 +22,8 @@ const contractABI = [
 // Contract addresses - replace with your deployed contract address
 export const CONTRACT_ADDRESS = {
   // Add your contract address here after deployment
-  sepolia: "0x5FbDB2315678afecb367f032d93F642f64180aa3", // Example address, replace with actual
-  localhost: "0x5FbDB2315678afecb367f032d93F642f64180aa3", // Example address, replace with actual
+  sepolia: "0xff7c362B5004d2d78364D0a5c98649643A2f7CB7", // Example address, replace with actual
+  localhost: "0xff7c362B5004d2d78364D0a5c98649643A2f7CB7", // Example address, replace with actual
 };
 
 // Network settings
@@ -63,8 +64,9 @@ export const getProvider = async () => {
   if (!window.ethereum) {
     throw new Error("MetaMask is not installed");
   }
-  return new providers.Web3Provider(window.ethereum);
+  return new BrowserProvider(window.ethereum);
 };
+
 
 // Determine network from chainId
 export const getNetworkName = (chainId: string | number): string => {
@@ -158,7 +160,7 @@ export const switchNetwork = async (networkName: "sepolia" | "localhost") => {
 // Get contract instance
 export const getContract = async (networkName: "sepolia" | "localhost" = "sepolia") => {
   const provider = await getProvider();
-  const signer = provider.getSigner();
+  const signer = await provider.getSigner();
   return new Contract(CONTRACT_ADDRESS[networkName], contractABI, signer);
 };
 
@@ -172,8 +174,8 @@ export const getUserBalance = async (address: string) => {
     const l2Balance = await contract.balances(address);
     
     return {
-      ethBalance: utils.formatEther(ethBalance),
-      l2Balance: utils.formatEther(l2Balance),
+      ethBalance: formatEther(ethBalance),
+      l2Balance: formatEther(l2Balance),
     };
   } catch (error) {
     console.error("Error getting balance:", error);
@@ -185,7 +187,7 @@ export const getUserBalance = async (address: string) => {
 export const depositFunds = async (amount: string) => {
   try {
     const contract = await getContract();
-    const tx = await contract.depositFunds({ value: utils.parseEther(amount) });
+    const tx = await contract.depositFunds({ value: parseEther(amount) });
     return await tx.wait();
   } catch (error) {
     console.error("Error depositing funds:", error);
@@ -197,7 +199,7 @@ export const depositFunds = async (amount: string) => {
 export const withdrawFunds = async (amount: string) => {
   try {
     const contract = await getContract();
-    const tx = await contract.withdrawFunds(utils.parseEther(amount));
+    const tx = await contract.withdrawFunds(parseEther(amount));
     return await tx.wait();
   } catch (error) {
     console.error("Error withdrawing funds:", error);
@@ -222,13 +224,14 @@ export const batchTransfer = async (recipients: string[], amounts: string[]) => 
   try {
     const contract = await getContract();
     const totalAmount = amounts.reduce(
-      (sum, amount) => sum.add(utils.parseEther(amount)),
-      utils.parseEther("0")
+      (sum, amount) => sum + parseEther(amount), // ✅ Use `+` instead of `.add()`
+      parseEther("0")
     );
+
     
     const tx = await contract.batchTransfer(
       recipients, 
-      amounts.map(a => utils.parseEther(a)), 
+      amounts.map(a => parseEther(a)), 
       { value: totalAmount }
     );
     
@@ -266,7 +269,7 @@ export const reportFraud = async (
       {
         sender: transaction.sender,
         recipient: transaction.recipient,
-        amount: utils.parseEther(transaction.amount),
+        amount: parseEther(transaction.amount),
       },
       merkleProof
     );

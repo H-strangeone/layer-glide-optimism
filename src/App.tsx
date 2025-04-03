@@ -10,6 +10,7 @@ import Withdraw from "./pages/Withdraw";
 import Admin from "./pages/Admin";
 import NotFound from "./pages/NotFound";
 
+
 const queryClient = new QueryClient();
 
 const App = () => (
