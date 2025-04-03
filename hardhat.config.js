@@ -1,7 +1,13 @@
 
 require("@nomicfoundation/hardhat-toolbox");
 
-// We'll use environment variables for API keys and private keys
+// Get environment variables for API keys and private keys
+// If running on local machine, you need to:
+// 1. Create a .env file in the project root
+// 2. Add ALCHEMY_API_KEY and PRIVATE_KEY to it
+// 3. Install dotenv: npm install dotenv
+require('dotenv').config();
+
 const ALCHEMY_API_KEY = process.env.ALCHEMY_API_KEY || "your_alchemy_api_key";
 const PRIVATE_KEY = process.env.PRIVATE_KEY || "your_private_key";
 
