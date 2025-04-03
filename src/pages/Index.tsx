@@ -1,3 +1,4 @@
+
 import Navbar from "@/components/Navbar";
 import NetworkStatus from "@/components/NetworkStatus";
 import BatchSubmission from "@/components/BatchSubmission";
@@ -5,6 +6,7 @@ import TransactionTracker from "@/components/TransactionTracker";
 import DepositCard from "@/components/DepositCard";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useState, useEffect } from "react";
+import { getNetworkName } from "@/lib/ethers";
 
 const Index = () => {
   const [wallet, setWallet] = useState<{
@@ -14,11 +16,15 @@ const Index = () => {
 
   useEffect(() => {
     // Check if wallet is connected (using window.ethereum)
-    const checkWalletConnection = () => {
+    const checkWalletConnection = async () => {
       if (window.ethereum && window.ethereum.selectedAddress) {
+        const chainId = await window.ethereum.request({ method: "eth_chainId" });
+        const networkName = getNetworkName(chainId);
+        
         setWallet({
           address: window.ethereum.selectedAddress,
-          network: window.ethereum.networkVersion === "11155111" ? "Sepolia" : "Unknown",
+          network: networkName === "sepolia" ? "Sepolia" : 
+                  networkName === "localhost" ? "Localhost" : "Unknown",
         });
       } else {
         setWallet(null);

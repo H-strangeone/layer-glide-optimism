@@ -35,7 +35,7 @@ export const NETWORK_SETTINGS = {
       symbol: "ETH",
       decimals: 18,
     },
-    rpcUrls: ["https://sepolia.infura.io/v3/"],
+    rpcUrls: ["https://eth-sepolia.infura.io/v3/", "https://eth-sepolia.g.alchemy.com/v2/"],
     blockExplorerUrls: ["https://sepolia.etherscan.io"],
   },
   localhost: {
@@ -66,6 +66,21 @@ export const getProvider = async () => {
   return new providers.Web3Provider(window.ethereum);
 };
 
+// Determine network from chainId
+export const getNetworkName = (chainId: string | number): string => {
+  // Convert to hex string if it's a number
+  const hexChainId = typeof chainId === 'number' 
+    ? `0x${chainId.toString(16)}` 
+    : chainId;
+  
+  if (hexChainId === NETWORK_SETTINGS.sepolia.chainId) {
+    return "sepolia";
+  } else if (hexChainId === NETWORK_SETTINGS.localhost.chainId) {
+    return "localhost";
+  }
+  return "unknown";
+};
+
 // Connect to wallet
 export const connectWallet = async () => {
   try {
@@ -77,10 +92,20 @@ export const connectWallet = async () => {
     }
     
     // Get network information
-    const network = await provider.getNetwork();
-    const networkName = Object.keys(NETWORK_SETTINGS).find(
-      (net) => parseInt(NETWORK_SETTINGS[net as keyof typeof NETWORK_SETTINGS].chainId, 16) === network.chainId
-    ) || "unknown";
+    const chainId = await window.ethereum.request({ method: "eth_chainId" });
+    const networkName = getNetworkName(chainId);
+    
+    // If network is unknown, try to switch to Sepolia
+    if (networkName === "unknown") {
+      await switchNetwork("sepolia");
+      const updatedChainId = await window.ethereum.request({ method: "eth_chainId" });
+      const updatedNetworkName = getNetworkName(updatedChainId);
+      
+      return { 
+        address: accounts[0], 
+        network: updatedNetworkName 
+      };
+    }
     
     return { 
       address: accounts[0], 

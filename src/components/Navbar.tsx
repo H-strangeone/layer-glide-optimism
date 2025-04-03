@@ -1,7 +1,7 @@
 
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/use-toast";
-import { connectWallet, getUserBalance, switchNetwork } from "@/lib/ethers";
+import { connectWallet, getUserBalance, switchNetwork, getNetworkName } from "@/lib/ethers";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -20,6 +20,9 @@ const Navbar = () => {
     const checkConnection = async () => {
       try {
         if (window.ethereum && window.ethereum.selectedAddress) {
+          const chainId = await window.ethereum.request({ method: "eth_chainId" });
+          const networkName = getNetworkName(chainId);
+          
           const result = await connectWallet();
           const balances = await getUserBalance(result.address);
           setWallet({
@@ -27,6 +30,11 @@ const Navbar = () => {
             ethBalance: balances.ethBalance,
             l2Balance: balances.l2Balance,
           });
+          
+          // Automatically try to switch to Sepolia if on unknown network
+          if (networkName === "unknown") {
+            await switchNetwork("sepolia");
+          }
         }
       } catch (error) {
         console.error("Connection check failed:", error);
@@ -51,8 +59,17 @@ const Navbar = () => {
         }
       });
 
-      window.ethereum.on("chainChanged", () => {
-        window.location.reload();
+      window.ethereum.on("chainChanged", async (chainId: string) => {
+        const networkName = getNetworkName(chainId);
+        if (window.ethereum.selectedAddress) {
+          const result = await connectWallet();
+          const balances = await getUserBalance(result.address);
+          setWallet({
+            ...result,
+            ethBalance: balances.ethBalance,
+            l2Balance: balances.l2Balance,
+          });
+        }
       });
     }
 

@@ -1,10 +1,8 @@
 
 require("@nomicfoundation/hardhat-toolbox");
 
-// Replace with your own Alchemy API key
+// We'll use environment variables for API keys and private keys
 const ALCHEMY_API_KEY = process.env.ALCHEMY_API_KEY || "your_alchemy_api_key";
-
-// Replace with your own private key for deployment
 const PRIVATE_KEY = process.env.PRIVATE_KEY || "your_private_key";
 
 /** @type import('hardhat/config').HardhatUserConfig */
