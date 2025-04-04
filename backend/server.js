@@ -27,7 +27,7 @@ const CONTRACT_ABI = [
   "function balances(address) external view returns (uint256)",
 ];
 
-// Get contract address from .env or use default
+// Get contract address from .env
 const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS || "0x5FbDB2315678afecb367f032d93F642f64180aa3";
 
 // Network configuration

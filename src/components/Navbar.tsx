@@ -29,28 +29,28 @@ export default function Navbar() {
               className="text-2xl font-bold bg-gradient-to-r from-purple-400 via-pink-500 to-purple-600 bg-clip-text text-transparent hover:from-purple-500 hover:via-pink-600 hover:to-purple-700 transition-all duration-300"
             >
               Layer 2 Scaling
-        </Link>
+            </Link>
             {isConnected && (
               <div className="flex space-x-6">
                 <Link
                   to="/transactions"
                   className="text-white/70 hover:text-white transition-colors duration-200"
                 >
-          Transactions
-        </Link>
+                  Transactions
+                </Link>
                 <Link
                   to="/withdraw"
                   className="text-white/70 hover:text-white transition-colors duration-200"
                 >
-          Withdraw
-        </Link>
+                  Withdraw
+                </Link>
                 <Link
                   to="/admin"
                   className="text-white/70 hover:text-white transition-colors duration-200"
                 >
-          Admin
-        </Link>
-      </div>
+                  Admin
+                </Link>
+              </div>
             )}
           </div>
           <div className="flex items-center space-x-4">
@@ -67,15 +67,15 @@ export default function Navbar() {
                   Disconnect
                 </Button>
               </>
-        ) : (
+            ) : (
               <Button
                 onClick={handleConnect}
                 disabled={isConnecting}
                 className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white transition-all duration-200"
               >
-            {isConnecting ? "Connecting..." : "Connect Wallet"}
-          </Button>
-        )}
+                {isConnecting ? "Connecting..." : "Connect Wallet"}
+              </Button>
+            )}
           </div>
         </div>
       </div>

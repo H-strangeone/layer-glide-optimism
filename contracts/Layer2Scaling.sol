@@ -35,6 +35,7 @@ contract Layer2Scaling {
     event FundsWithdrawn(address indexed user, uint256 amount);
     event FraudPenaltyApplied(address indexed user, uint256 penalty);
     event BatchFinalized(uint256 indexed batchId);
+    event TransactionExecuted(address indexed sender, address indexed recipient, uint256 amount);
 
     modifier onlyAdmin() {
         require(msg.sender == admin, "Only admin can call this function");
@@ -148,16 +149,27 @@ contract Layer2Scaling {
         emit FundsWithdrawn(msg.sender, _amount);
     }
 
-    function batchTransfer(address[] memory recipients, uint256[] memory amounts) external payable {
-        require(recipients.length == amounts.length, "Mismatched arrays");
+    // New function to execute a Layer 2 transaction
+    function executeL2Transaction(address _recipient, uint256 _amount) external {
+        require(balances[msg.sender] >= _amount, "Insufficient Layer 2 balance");
+        balances[msg.sender] -= _amount;
+        balances[_recipient] += _amount;
+        emit TransactionExecuted(msg.sender, _recipient, _amount);
+    }
+
+    // New function to execute multiple Layer 2 transactions in a batch
+    function executeL2BatchTransaction(address[] memory _recipients, uint256[] memory _amounts) external {
+        require(_recipients.length == _amounts.length, "Mismatched arrays");
         uint256 totalAmount = 0;
-        for (uint256 i = 0; i < amounts.length; i++) {
-            totalAmount += amounts[i];
+        for (uint256 i = 0; i < _amounts.length; i++) {
+            totalAmount += _amounts[i];
         }
-        require(msg.value >= totalAmount, "Insufficient ETH sent");
-        for (uint256 i = 0; i < recipients.length; i++) {
-            (bool success, ) = payable(recipients[i]).call{value: amounts[i]}("");
-            require(success, "Transfer failed");
+        require(balances[msg.sender] >= totalAmount, "Insufficient Layer 2 balance");
+        
+        balances[msg.sender] -= totalAmount;
+        for (uint256 i = 0; i < _recipients.length; i++) {
+            balances[_recipients[i]] += _amounts[i];
+            emit TransactionExecuted(msg.sender, _recipients[i], _amounts[i]);
         }
     }
 

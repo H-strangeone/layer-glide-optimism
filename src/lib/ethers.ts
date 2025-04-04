@@ -1,36 +1,44 @@
 import { BrowserProvider, Contract, formatEther, parseEther, formatUnits, TransactionResponse, TransactionReceipt as EthersTransactionReceipt, Block, JsonRpcSigner } from "ethers";
+import { ethers, EventLog, Log } from 'ethers';
 
 import { toast } from "@/components/ui/use-toast";
 import { db } from './db';
 import { PrismaClient } from '@prisma/client';
+import { CONTRACT_ADDRESS } from "@/config/contract";
 
 const prisma = new PrismaClient();
 
-// Layer2Scaling contract ABI
-const contractABI = [
-  "function depositFunds() external payable",
-  "function withdrawFunds(uint256 _amount) external",
-  "function balances(address) external view returns (uint256)",
-  "function batchTransfer(address[] memory recipients, uint256[] memory amounts) external payable",
-  "function submitBatch(bytes32[] memory _transactionsRoots) external",
-  "function verifyBatch(uint256 _batchId) external",
-  "function reportFraud(uint256 _batchId, bytes32 _fraudProof, tuple(address sender, address recipient, uint256 amount) memory _tx, bytes32[] memory _merkleProof) external",
-  "function batches(uint256) external view returns (uint256 batchId, bytes32 transactionsRoot, uint256 timestamp, bool verified, bool finalized)",
-  "function nextBatchId() external view returns (uint256)",
-  "function admin() external view returns (address)",
-  "function isOperator(address) external view returns (bool)",
+// Contract ABI
+const CONTRACT_ABI = [
+  "function depositFunds() payable",
+  "function withdrawFunds(uint256 _amount)",
+  "function executeL2Transaction(address _recipient, uint256 _amount)",
+  "function executeL2BatchTransaction(address[] _recipients, uint256[] _amounts)",
+  "function submitBatch(bytes32[] _transactionsRoots)",
+  "function verifyBatch(uint256 _batchId)",
+  "function finalizeBatch(uint256 _batchId)",
+  "function reportFraud(uint256 _batchId, bytes32 _fraudProof, tuple(address sender, address recipient, uint256 amount) _tx, bytes32[] _merkleProof)",
+  "function balances(address) view returns (uint256)",
+  "function admin() view returns (address)",
+  "function isOperator(address) view returns (bool)",
+  "function changeAdmin(address newAdmin)",
+  "function addOperator(address operator)",
+  "function removeOperator(address operator)",
+  "function nextBatchId() view returns (uint256)",
+  "function slashingPenalty() view returns (uint256)",
+  "function batches(uint256) view returns (uint256 batchId, bytes32 transactionsRoot, uint256 timestamp, bool verified, bool finalized)",
+  "event TransactionExecuted(address indexed from, address indexed to, uint256 value, uint256 timestamp, uint256 indexed batchId)",
   "event BatchSubmitted(uint256 indexed batchId, bytes32 transactionsRoot)",
+  "event BatchVerified(uint256 indexed batchId)",
+  "event BatchFinalized(uint256 indexed batchId)",
+  "event FraudReported(uint256 indexed batchId, bytes32 fraudProof)",
+  "event AdminChanged(address indexed previousAdmin, address indexed newAdmin)",
+  "event OperatorAdded(address indexed operator)",
+  "event OperatorRemoved(address indexed operator)",
   "event FundsDeposited(address indexed user, uint256 amount)",
   "event FundsWithdrawn(address indexed user, uint256 amount)",
-  "event TransactionSubmitted(address indexed sender, address indexed recipient, uint256 amount, bytes32 transactionHash)",
-  "event BatchFinalized(uint256 indexed batchId, bytes32 transactionsRoot, uint256 timestamp)"
+  "event FraudPenaltyApplied(address indexed user, uint256 penalty)"
 ];
-
-// Contract addresses - replace with your deployed contract address
-export const CONTRACT_ADDRESS = {
-  sepolia: "0xff7c362B5004d2d78364D0a5c98649643A2f7CB7",
-  localhost: "0x5FbDB2315678afecb367f032d93F642f64180aa3"  // Local Hardhat deployment
-};
 
 // Network settings
 export const NETWORK_SETTINGS = {
@@ -65,14 +73,380 @@ declare global {
   }
 }
 
-// Ethers provider setup
-export const getProvider = async () => {
+// Transaction types
+export interface TransactionHistory {
+  hash: string;
+  from: string;
+  to: string;
+  value: string;
+  status: string;
+  gasPrice: string;
+  timestamp: number;
+}
+
+export interface TransactionEvent {
+  eventName: string;
+  args: {
+    transactionHash: string;
+    from: string;
+    to: string;
+    value: bigint;
+  };
+}
+
+export interface TransactionReceipt {
+  status: string;
+  effectiveGasPrice?: bigint;
+}
+
+export type TransactionStatus = "pending" | "confirmed" | "failed";
+
+interface Batch {
+  id: string;
+  transactionsRoot: string;
+  timestamp: string;
+  verified: boolean;
+  finalized: boolean;
+}
+
+// Initialize provider and contract
+const getProvider = async () => {
   if (!window.ethereum) {
     throw new Error("MetaMask is not installed");
   }
   return new BrowserProvider(window.ethereum);
 };
 
+// Get contract instance
+export const getContract = async () => {
+  const provider = await getProvider();
+  const signer = await provider.getSigner();
+  return new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
+};
+
+// Get transaction history for an address
+export const getTransactionHistory = async (address: string): Promise<TransactionHistory[]> => {
+  try {
+    const contract = await getContract();
+    const provider = await getProvider();
+
+    // Get all TransactionExecuted events for this address
+    const filter = contract.filters.TransactionExecuted(address);
+    const events = await contract.queryFilter(filter);
+
+    // Convert events to TransactionHistory format
+    const transactions = await Promise.all(events.map(async (event) => {
+      const block = await provider.getBlock(event.blockNumber);
+      // Cast event to EventLog to access args
+      const eventLog = event as ethers.EventLog;
+      return {
+        hash: event.transactionHash,
+        from: eventLog.args[0], // sender
+        to: eventLog.args[1],   // recipient
+        value: eventLog.args[2].toString(), // amount
+        status: "confirmed", // Since we're getting past events, they're confirmed
+        gasPrice: eventLog.args[3]?.toString() || "0", // gas price if available
+        timestamp: block?.timestamp || Math.floor(Date.now() / 1000)
+      };
+    }));
+
+    return transactions;
+  } catch (error) {
+    console.error("Error getting transaction history:", error);
+    return [];
+  }
+};
+
+// Get transaction status
+export const getTransactionStatus = async (hash: string): Promise<TransactionReceipt> => {
+  try {
+    const provider = await getProvider();
+    const receipt = await provider.getTransactionReceipt(hash);
+
+    if (!receipt) {
+      return { status: "pending" };
+    }
+
+    return {
+      status: receipt.status === 1 ? "confirmed" : "failed",
+      effectiveGasPrice: receipt.gasPrice,
+    };
+  } catch (error) {
+    console.error("Error getting transaction status:", error);
+    return { status: "failed" };
+  }
+};
+
+// Subscribe to transaction events
+export const subscribeToTransactionEvents = async (callback: (event: TransactionEvent) => void): Promise<() => void> => {
+  const contract = await getContract();
+
+  // Subscribe to TransactionExecuted events
+  contract.on("TransactionExecuted", (sender, recipient, amount, event) => {
+    callback({
+      eventName: "TransactionSubmitted",
+      args: {
+        transactionHash: event.transactionHash,
+        from: sender,
+        to: recipient,
+        value: amount,
+      },
+    });
+  });
+
+  // Return unsubscribe function
+  return () => {
+    contract.removeAllListeners();
+  };
+};
+
+// Deposit funds to Layer 2
+export const depositFunds = async (amount: string) => {
+  try {
+    const contract = await getContract();
+    const tx = await contract.depositFunds({
+      value: parseEther(amount)
+    });
+    await tx.wait();
+    toast({
+      title: "Success",
+      description: "Funds deposited successfully",
+    });
+    return tx;
+  } catch (error) {
+    console.error("Error depositing funds:", error);
+    toast({
+      title: "Error",
+      description: "Failed to deposit funds",
+      variant: "destructive",
+    });
+    throw error;
+  }
+};
+
+// Withdraw funds from Layer 2
+export const withdrawFunds = async (amount: string) => {
+  try {
+    const contract = await getContract();
+    const tx = await contract.withdrawFunds(
+      parseEther(amount)
+    );
+    await tx.wait();
+    toast({
+      title: "Success",
+      description: "Withdrawal initiated successfully",
+    });
+    return tx;
+  } catch (error) {
+    console.error("Error withdrawing funds:", error);
+    toast({
+      title: "Error",
+      description: "Failed to withdraw funds",
+      variant: "destructive",
+    });
+    throw error;
+  }
+};
+
+// Execute a single Layer 2 transaction
+export const executeL2Transaction = async (recipient: string, amount: string) => {
+  try {
+    const contract = await getContract();
+    const tx = await contract.executeL2Transaction(
+      recipient,
+      parseEther(amount)
+    );
+    await tx.wait();
+    toast({
+      title: "Success",
+      description: "Transaction executed successfully",
+    });
+    return tx;
+  } catch (error) {
+    console.error("Error executing transaction:", error);
+    toast({
+      title: "Error",
+      description: "Failed to execute transaction",
+      variant: "destructive",
+    });
+    throw error;
+  }
+};
+
+// Execute a batch of Layer 2 transactions
+export const executeL2BatchTransaction = async (recipients: string[], amounts: string[]) => {
+  try {
+    const contract = await getContract();
+    const weiAmounts = amounts.map(amount => parseEther(amount));
+    const tx = await contract.executeL2BatchTransaction(
+      recipients,
+      weiAmounts
+    );
+    await tx.wait();
+    toast({
+      title: "Success",
+      description: "Batch transaction executed successfully",
+    });
+    return tx;
+  } catch (error) {
+    console.error("Error executing batch transaction:", error);
+    toast({
+      title: "Error",
+      description: "Failed to execute batch transaction",
+      variant: "destructive",
+    });
+    throw error;
+  }
+};
+
+// Alias for executeL2BatchTransaction for backward compatibility
+export const batchTransfer = executeL2BatchTransaction;
+
+// Submit a batch with Merkle root
+export const submitBatchWithMerkleRoot = async (merkleRoot: string) => {
+  try {
+    const contract = await getContract();
+    // Convert the merkleRoot to an array since the contract expects bytes32[]
+    const tx = await contract.submitBatch([merkleRoot]);
+    await tx.wait();
+    toast({
+      title: "Success",
+      description: "Batch submitted successfully",
+    });
+    return tx;
+  } catch (error) {
+    console.error("Error submitting batch:", error);
+    toast({
+      title: "Error",
+      description: "Failed to submit batch",
+      variant: "destructive",
+    });
+    throw error;
+  }
+};
+
+// Verify a batch
+export const verifyBatch = async (batchId: number) => {
+  try {
+    const contract = await getContract();
+    const tx = await contract.verifyBatch(batchId);
+    await tx.wait();
+    toast({
+      title: "Success",
+      description: "Batch verified successfully",
+    });
+    return tx;
+  } catch (error) {
+    console.error("Error verifying batch:", error);
+    toast({
+      title: "Error",
+      description: "Failed to verify batch",
+      variant: "destructive",
+    });
+    throw error;
+  }
+};
+
+// Finalize a batch
+export const finalizeBatch = async (batchId: number) => {
+  try {
+    const contract = await getContract();
+    const tx = await contract.finalizeBatch(batchId);
+    await tx.wait();
+    toast({
+      title: "Success",
+      description: "Batch finalized successfully",
+    });
+    return tx;
+  } catch (error) {
+    console.error("Error finalizing batch:", error);
+    toast({
+      title: "Error",
+      description: "Failed to finalize batch",
+      variant: "destructive",
+    });
+    throw error;
+  }
+};
+
+// Report fraud with Merkle proof
+export const reportFraudWithMerkleProof = async (batchId: number, proof: string[]) => {
+  try {
+    const contract = await getContract();
+    const tx = await contract.reportFraud(batchId, proof);
+    await tx.wait();
+    toast({
+      title: "Success",
+      description: "Fraud reported successfully",
+    });
+    return tx;
+  } catch (error) {
+    console.error("Error reporting fraud:", error);
+    toast({
+      title: "Error",
+      description: "Failed to report fraud",
+      variant: "destructive",
+    });
+    throw error;
+  }
+};
+
+// Get Layer 2 balance
+export const getLayer2Balance = async (address: string) => {
+  try {
+    const contract = await getContract();
+    const balance = await contract.balances(address);
+    return formatEther(balance);
+  } catch (error) {
+    console.error("Error getting Layer 2 balance:", error);
+    throw error;
+  }
+};
+
+// Get all batches (admin only)
+export const getBatches = async (): Promise<Batch[]> => {
+  try {
+    const contract = await getContract();
+    const nextBatchId = await contract.nextBatchId();
+    const batches: Batch[] = [];
+
+    // Fetch all batches from 0 to nextBatchId-1
+    // Convert nextBatchId to number if it's a BigNumber, otherwise use it directly
+    const batchCount = typeof nextBatchId === 'bigint' ? Number(nextBatchId) : nextBatchId;
+
+    for (let i = 0; i < batchCount; i++) {
+      const batch = await contract.batches(i);
+      batches.push({
+        id: i.toString(),
+        transactionsRoot: batch.transactionsRoot,
+        timestamp: batch.timestamp.toString(),
+        verified: batch.verified,
+        finalized: batch.finalized
+      });
+    }
+
+    return batches;
+  } catch (error) {
+    console.error("Error fetching batches:", error);
+    throw error;
+  }
+};
+
+// Subscribe to events
+export const subscribeToEvents = async (callback: (event: any) => void) => {
+  const contract = await getContract();
+  contract.on("TransactionExecuted", callback);
+  contract.on("BatchSubmitted", callback);
+  contract.on("BatchVerified", callback);
+  contract.on("BatchFinalized", callback);
+  contract.on("FraudReported", callback);
+};
+
+// Unsubscribe from events
+export const unsubscribeFromEvents = async () => {
+  const contract = await getContract();
+  contract.removeAllListeners();
+};
 
 // Determine network from chainId
 export const getNetworkName = (chainId: string | number): string => {
@@ -318,450 +692,6 @@ const updateLayer2Balance = async (userAddress: string, contractAddress: string,
   }
 };
 
-// Get Layer 2 balance from both contract and database
-export const getLayer2Balance = async (address: string): Promise<string> => {
-  try {
-    const contract = await getContract();
-    const contractBalance = await contract.balances(address);
-    const formattedBalance = formatEther(contractBalance);
-
-    // Update balance in database via API
-    try {
-      await updateLayer2Balance(address, contract.target as string, formattedBalance);
-    } catch (updateError) {
-      console.warn('Failed to update balance in database:', updateError);
-      // Continue with contract balance even if update fails
-    }
-
-    return formattedBalance;
-  } catch (error) {
-    console.error('Error getting Layer 2 balance:', error);
-
-    // Try to get balance from database as fallback
-    try {
-      const response = await fetch(`http://localhost:5500/api/balance/${address}`, {
-        headers: {
-          'Accept': 'application/json'
-        }
-      });
-
-      if (!response.ok) {
-        const errorData = await response.text();
-        console.error('Balance fetch failed:', errorData);
-        throw new Error(`Failed to fetch balance: ${response.status}`);
-      }
-
-      const data = await response.json();
-      return data.balance || '0';
-    } catch (dbError) {
-      console.error('Error getting balance from database:', dbError);
-      return '0';
-    }
-  }
-};
-
-// Update deposit function to track balances
-export const depositFunds = async (amount: string): Promise<void> => {
-  try {
-    console.log('Starting deposit process...');
-    const provider = await getProvider();
-    const signer = await provider.getSigner();
-
-    if (!signer) {
-      throw new Error('No signer available');
-    }
-
-    const address = await signer.getAddress();
-    if (!address) {
-      throw new Error('No address available');
-    }
-
-    const contract = new Contract(
-      CONTRACT_ADDRESS.localhost,
-      contractABI,
-      signer
-    );
-
-    console.log('Contract target:', contract.target);
-
-    // Convert amount to wei
-    const amountInWei = parseEther(amount);
-
-    // Send the transaction with value
-    const tx = await contract.depositFunds({ value: amountInWei });
-    console.log('Transaction sent:', tx.hash);
-
-    // Wait for confirmation
-    const receipt = await tx.wait();
-    console.log('Transaction confirmed:', receipt);
-
-    // Update the Layer 2 balance
-    await updateLayer2Balance(address, contract.target as string, amount);
-
-    toast({
-      title: "Deposit Successful",
-      description: `Successfully deposited ${amount} ETH to Layer 2. New balance: ${amount} ETH`,
-    });
-
-  } catch (error) {
-    console.error('Deposit error:', error);
-    toast({
-      title: "Deposit Failed",
-      description: error instanceof Error ? error.message : "Failed to deposit funds",
-      variant: "destructive",
-    });
-    throw error;
-  }
-};
-
-// Withdraw funds from L2
-export const withdrawFunds = async (amount: string) => {
-  try {
-    const contract = await getContract();
-    const tx = await contract.withdrawFunds(parseEther(amount));
-    return await tx.wait();
-  } catch (error) {
-    console.error("Error withdrawing funds:", error);
-    throw error;
-  }
-};
-
-export type TransactionStatus = 'pending' | 'confirmed' | 'failed';
-
-export interface Batch {
-  id: number;
-  transactions: string[];
-  status: 'pending' | 'submitted' | 'confirmed';
-  timestamp: number;
-}
-
-// Get transaction batches
-export const getBatches = async (): Promise<Batch[]> => {
-  try {
-    // First check if we have a connected account
-    const accounts = await window.ethereum.request({
-      method: "eth_accounts"
-    });
-
-    if (accounts.length === 0) {
-      return [];
-    }
-
-    const provider = await getProvider();
-    const contract = await getContract();
-    const nextBatchId = await contract.nextBatchId();
-    const batches: Batch[] = [];
-
-    // Fetch all batches from 1 to nextBatchId-1
-    for (let i = 1; i < Number(nextBatchId); i++) {
-      const batch = await contract.batches(i);
-      batches.push({
-        id: Number(batch.batchId),
-        transactions: [batch.transactionsRoot],
-        status: batch.finalized ? 'confirmed' : batch.verified ? 'submitted' : 'pending',
-        timestamp: Number(batch.timestamp)
-      });
-    }
-
-    return batches;
-  } catch (error) {
-    console.error('Error fetching batches:', error);
-    return [];
-  }
-};
-
-export interface TransactionReceipt {
-  status: TransactionStatus;
-  effectiveGasPrice?: bigint;
-}
-
-export interface TransactionEvent {
-  eventName: string;
-  args: {
-    transactionHash: string;
-    from: string;
-    to: string;
-    value: bigint;
-  };
-}
-
-// Update the getTransactionStatus function to return TransactionReceipt
-export const getTransactionStatus = async (hash: string): Promise<TransactionReceipt> => {
-  try {
-    const provider = await getProvider();
-    const receipt = await provider.getTransactionReceipt(hash) as EthersTransactionReceipt;
-
-    if (!receipt) {
-      return { status: 'pending' };
-    }
-
-    if (receipt.status === 0) {
-      return { status: 'failed' };
-    }
-
-    const result: TransactionReceipt = {
-      status: 'confirmed'
-    };
-
-    if ('effectiveGasPrice' in receipt && typeof receipt.effectiveGasPrice === 'bigint') {
-      result.effectiveGasPrice = receipt.effectiveGasPrice;
-    }
-
-    return result;
-  } catch (error) {
-    console.error('Error getting transaction status:', error);
-    return { status: 'failed' };
-  }
-};
-
-// Subscribe to transaction events
-export const subscribeToTransactionEvents = async (callback: (event: any) => void) => {
-  try {
-    const contract = await getContract();
-
-    // Subscribe to all relevant events
-    contract.on("TransactionSubmitted", callback);
-    contract.on("BatchSubmitted", callback);
-    contract.on("BatchFinalized", callback);
-
-    return () => {
-      contract.removeAllListeners();
-    };
-  } catch (error) {
-    console.error("Error subscribing to events:", error);
-    return () => { };
-  }
-};
-
-export interface TransactionHistory {
-  hash: string;
-  from: string;
-  to: string;
-  value: bigint;
-  status: 'pending' | 'confirmed' | 'failed';
-  gasPrice?: bigint;
-  timestamp: number;
-}
-
-export const getTransactionHistory = async (address: string): Promise<TransactionHistory[]> => {
-  try {
-    const provider = await getProvider();
-    const contract = await getContract();
-    const currentBlock = await provider.getBlockNumber();
-    const startBlock = Math.max(0, currentBlock - 10); // Last 10 blocks for local testing
-    const transactions: TransactionHistory[] = [];
-
-    // Get L1 transactions
-    for (let blockNumber = startBlock; blockNumber <= currentBlock; blockNumber++) {
-      const block = await provider.getBlock(blockNumber, true) as Block;
-      if (!block || !block.transactions) continue;
-
-      for (const tx of block.transactions) {
-        const transaction = tx as unknown as TransactionResponse;
-        if (!transaction) continue;
-
-        const fromAddress = transaction.from?.toLowerCase() || '';
-        const toAddress = transaction.to?.toLowerCase() || '';
-        const userAddress = address.toLowerCase();
-
-        if (fromAddress === userAddress || toAddress === userAddress) {
-          const receipt = await provider.getTransactionReceipt(transaction.hash);
-
-          // Convert gasPrice to bigint if it's a string
-          let gasPrice = transaction.gasPrice;
-          if (typeof gasPrice === 'string') {
-            gasPrice = BigInt(gasPrice);
-          }
-
-          transactions.push({
-            hash: transaction.hash,
-            from: transaction.from,
-            to: transaction.to || '',
-            value: transaction.value,
-            status: receipt ? (receipt.status === 1 ? 'confirmed' : 'failed') : 'pending',
-            gasPrice: gasPrice,
-            timestamp: Number(block.timestamp)
-          });
-        }
-      }
-    }
-
-    // Sort by timestamp descending
-    return transactions.sort((a, b) => b.timestamp - a.timestamp);
-  } catch (error) {
-    console.error('Error fetching transaction history:', error);
-    return [];
-  }
-};
-
-// Submit batch
-export const submitBatch = async (transactionRoots: string[]) => {
-  try {
-    const contract = await getContract();
-    const tx = await contract.submitBatch(transactionRoots);
-    await tx.wait();
-    return tx;
-  } catch (error) {
-    console.error("Error submitting batch:", error);
-    throw error;
-  }
-};
-
-// Batch transfer
-export const batchTransfer = async (recipients: string[], amounts: string[]) => {
-  try {
-    const contract = await getContract();
-
-    // Convert amounts to wei
-    const amountsInWei = amounts.map(a => parseEther(a));
-
-    // Calculate total amount to check against Layer 2 balance
-    const totalAmount = amountsInWei.reduce(
-      (sum, amount) => sum + amount,
-      parseEther("0")
-    );
-
-    // Get sender's Layer 2 balance
-    const signer = await contract.signer.getAddress();
-    const layer2Balance = await contract.balances(signer);
-
-    // Check if sender has enough Layer 2 balance
-    if (layer2Balance < totalAmount) {
-      throw new Error("Insufficient Layer 2 balance");
-    }
-
-    // Call batchTransfer without value parameter since we're using Layer 2 balance
-    const tx = await contract.batchTransfer(
-      recipients,
-      amountsInWei
-    );
-
-    return await tx.wait();
-  } catch (error) {
-    console.error("Error in batch transfer:", error);
-    throw error;
-  }
-};
-
-// Verify batch
-export const verifyBatch = async (batchId: number) => {
-  try {
-    const contract = await getContract();
-    const tx = await contract.verifyBatch(batchId);
-    await tx.wait();
-    return tx;
-  } catch (error) {
-    console.error("Error verifying batch:", error);
-    throw error;
-  }
-};
-
-// Finalize batch
-export const finalizeBatch = async (batchId: number) => {
-  try {
-    const contract = await getContract();
-    const tx = await contract.finalizeBatch(batchId);
-    await tx.wait();
-    return tx;
-  } catch (error) {
-    console.error("Error finalizing batch:", error);
-    throw error;
-  }
-};
-
-// Get next batch ID
-export const getNextBatchId = async (): Promise<number> => {
-  try {
-    const contract = await getContract();
-    const id = await contract.nextBatchId();
-    return Number(id);
-  } catch (error) {
-    console.error("Error getting next batch ID:", error);
-    return 0;
-  }
-};
-
-// Report fraud
-export const reportFraud = async (
-  batchId: number,
-  fraudProof: string,
-  transaction: { sender: string; recipient: string; amount: string },
-  merkleProof: string[]
-) => {
-  try {
-    const contract = await getContract();
-    const tx = await contract.reportFraud(
-      batchId,
-      fraudProof,
-      {
-        sender: transaction.sender,
-        recipient: transaction.recipient,
-        amount: parseEther(transaction.amount),
-      },
-      merkleProof
-    );
-    return await tx.wait();
-  } catch (error) {
-    console.error("Error reporting fraud:", error);
-    throw error;
-  }
-};
-
-// Helper functions for Merkle tree implementation
-export const hashTransaction = (sender: string, recipient: string, amount: string) => {
-  // This is a simplified version. In production, use a proper library for this.
-  const data = `${sender}${recipient}${amount}`;
-  return "0x" + Array.from(new TextEncoder().encode(data))
-    .map(b => b.toString(16).padStart(2, "0"))
-    .join("");
-};
-
-// Add isAdmin function
-export const isAdmin = async (address: string): Promise<boolean> => {
-  try {
-    const provider = await getProvider();
-    const chainId = await provider.send('eth_chainId', []);
-    const contract = await getContract();
-
-    console.log('Checking admin status for address:', address);
-    const adminAddress = await contract.admin();
-    console.log('Admin address from contract:', adminAddress);
-
-    const isMatch = adminAddress.toLowerCase() === address.toLowerCase();
-    console.log('Is admin match:', isMatch);
-
-    return isMatch;
-  } catch (error) {
-    console.error('Error checking admin status:', error);
-    return false;
-  }
-};
-
-// Get contract instance
-export const getContract = async () => {
-  try {
-    if (!window.ethereum) {
-      throw new Error("MetaMask is not installed");
-    }
-
-    const provider = await getProvider();
-    const signer = await provider.getSigner();
-
-    if (!signer) {
-      throw new Error("No signer available. Please connect your wallet.");
-    }
-
-    const chainId = await provider.send('eth_chainId', []);
-    const network = chainId === NETWORK_SETTINGS.sepolia.chainId ? 'sepolia' : 'localhost';
-    const contractAddress = CONTRACT_ADDRESS[network as keyof typeof CONTRACT_ADDRESS];
-
-    return new Contract(contractAddress, contractABI, signer);
-  } catch (error) {
-    console.error("Error getting contract instance:", error);
-    throw error;
-  }
-};
-
 // Get Layer 1 balance for a user
 export const getLayer1Balance = async (address: string): Promise<string> => {
   try {
@@ -773,5 +703,88 @@ export const getLayer1Balance = async (address: string): Promise<string> => {
     return '0';
   }
 };
+
+// Check if an address is an admin
+export const isAdmin = async (address: string): Promise<boolean> => {
+  try {
+    const contract = await getContract();
+    const adminAddress = await contract.admin();
+    const isOperator = await contract.isOperator(address);
+    return address.toLowerCase() === adminAddress.toLowerCase() || isOperator;
+  } catch (error) {
+    console.error("Error checking admin status:", error);
+    return false;
+  }
+};
+
+// Add an operator (admin only)
+export const addOperator = async (operatorAddress: string) => {
+  try {
+    const contract = await getContract();
+    const tx = await contract.addOperator(operatorAddress);
+    await tx.wait();
+  } catch (error) {
+    console.error("Error adding operator:", error);
+    throw error;
+  }
+};
+
+// Remove an operator (admin only)
+export const removeOperator = async (operatorAddress: string) => {
+  try {
+    const contract = await getContract();
+    const tx = await contract.removeOperator(operatorAddress);
+    await tx.wait();
+  } catch (error) {
+    console.error("Error removing operator:", error);
+    throw error;
+  }
+};
+
+// Check if an address is an operator
+export const isOperator = async (address: string): Promise<boolean> => {
+  try {
+    const contract = await getContract();
+    return await contract.isOperator(address);
+  } catch (error) {
+    console.error("Error checking operator status:", error);
+    return false;
+  }
+};
+
+interface TransactionExecutedLog extends Log {
+  args?: [string, string, bigint, bigint, bigint]; // [from, to, value, timestamp, batchId]
+}
+
+export async function getBatchTransactions(batchId: string) {
+  try {
+    const contract = await getContract();
+
+    // Get batch events
+    const filter = contract.filters.TransactionExecuted();
+    const events = await contract.queryFilter(filter) as TransactionExecutedLog[];
+
+    // Filter events for the specific batch
+    const batchTransactions = events
+      .filter(event => event.args?.[4].toString() === batchId)
+      .map(event => {
+        if (!event.args) return null;
+        const [from, to, value, timestamp] = event.args;
+        return {
+          from,
+          to,
+          value: ethers.formatEther(value),
+          status: "confirmed",
+          timestamp: Number(timestamp)
+        };
+      })
+      .filter((tx): tx is NonNullable<typeof tx> => tx !== null);
+
+    return batchTransactions;
+  } catch (error) {
+    console.error("Error fetching batch transactions:", error);
+    return [];
+  }
+}
 
 

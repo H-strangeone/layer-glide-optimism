@@ -1,3 +1,6 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
 generator client {
   provider = "prisma-client-js"
 }
@@ -8,39 +11,38 @@ datasource db {
 }
 
 model ContractDeployment {
-  id              String   @id @default(cuid())
-  address         String   @unique
-  network         String   // "sepolia" or "localhost"
-  deployedAt      DateTime @default(now())
-  isActive        Boolean  @default(true)
-  balances        Layer2Balance[]
+  id        String   @id @default(uuid())
+  address   String   @unique
+  network   String
+  deployedAt DateTime @default(now())
+  isActive  Boolean  @default(true)
+  balances  Layer2Balance[]
 }
 
 model Layer2Balance {
-  id                  String   @id @default(cuid())
-  userAddress         String
-  balance            String   @default("0")
-  contractDeployment ContractDeployment @relation(fields: [contractAddress], references: [address])
-  contractAddress    String
-  updatedAt          DateTime @updatedAt
-  createdAt          DateTime @default(now())
+  id              String   @id @default(uuid())
+  userAddress     String
+  balance         String   @default("0")
+  contractAddress String
+  contract        ContractDeployment @relation(fields: [contractAddress], references: [address])
+  updatedAt       DateTime @updatedAt
+  createdAt       DateTime @default(now())
 
   @@unique([userAddress, contractAddress])
 }
 
 model Transaction {
-  id              String   @id @default(cuid())
+  id              String   @id @default(uuid())
   hash            String   @unique
   from            String
   to              String
   amount          String
-  timestamp       DateTime @default(now())
-  status          String   // "pending", "completed", "failed"
-  type            String   // "deposit", "withdraw", "transfer"
-  layer           String   // "layer1", "layer2"
+  type            String
+  layer           String
+  status          String   @default("pending")
+  contractAddress String?
   batchId         Int?
   merkleProof     String?
-  contractAddress String?  // Track which contract instance this transaction belongs to
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 }
@@ -55,12 +57,13 @@ model Balance {
 }
 
 model Batch {
-  id              String   @id @default(cuid())
+  id              String   @id @default(uuid())
   batchId         Int      @unique
   transactionsRoot String
   timestamp       DateTime @default(now())
-  status          String   // "pending", "verified", "finalized"
-  contractAddress String?  // Track which contract instance this batch belongs to
+  verified        Boolean  @default(false)
+  finalized       Boolean  @default(false)
+  contractAddress String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 } 
