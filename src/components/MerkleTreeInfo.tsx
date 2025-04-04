@@ -1,14 +1,12 @@
 import { useState, useEffect } from 'react';
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/use-toast";
-import { getBatches, submitBatchWithMerkleRoot, verifyBatch, finalizeBatch, isAdmin } from "@/lib/ethers";
+import { createMerkleTreeFromTransactions, Transaction, verifyMerkleProof } from "@/lib/merkleTree";
+import { getBatches, reportFraudWithMerkleProof, isAdmin } from "@/lib/ethers";
 import { useWallet } from "@/hooks/useWallet";
-import { createMerkleTreeFromTransactions, Transaction } from "@/lib/merkleTree";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { AlertCircle } from "lucide-react";
-import { BatchDetails } from './BatchDetails';
 
 interface Batch {
     id: string;
@@ -18,7 +16,7 @@ interface Batch {
     finalized: boolean;
 }
 
-const AdminBatchManager = () => {
+const MerkleTreeInfo = () => {
     const { address, isConnected } = useWallet();
     const [batches, setBatches] = useState<Batch[]>([]);
     const [selectedBatch, setSelectedBatch] = useState<Batch | null>(null);
@@ -80,117 +78,45 @@ const AdminBatchManager = () => {
 
     const handleBatchSelect = (batch: Batch) => {
         setSelectedBatch(batch);
-        // In a real implementation, we would fetch the actual transactions for this batch
-        // and compute the Merkle root. For now, we'll just use the first transaction hash
-        if (batch.transactionsRoot.length > 0) {
-            setMerkleRoot(batch.transactionsRoot);
-        } else {
-            setMerkleRoot("");
-        }
+        setMerkleRoot(batch.transactionsRoot);
     };
 
-    const handleSubmitBatch = async () => {
-        if (!address || !isAdminUser) return;
+    const handleReportFraud = async () => {
+        if (!selectedBatch || !address || !isAdminUser) return;
 
         setIsLoading(true);
         try {
             // In a real implementation, we would:
-            // 1. Fetch pending transactions from the database
-            // 2. Create a Merkle tree from these transactions
-            // 3. Submit the Merkle root to the contract
+            // 1. Fetch the actual transactions for this batch
+            // 2. Find the fraudulent transaction
+            // 3. Generate a Merkle proof for it
+            // 4. Submit the fraud report with the proof
 
-            // For demonstration purposes, we'll create a dummy transaction and Merkle root
+            // For demonstration purposes, we'll create a dummy transaction and proof
             const dummyTransaction: Transaction = {
                 sender: address,
                 recipient: "0x0000000000000000000000000000000000000000",
                 amount: "0.1"
             };
 
-            const dummyTransactions = [dummyTransaction];
-            const merkleTree = createMerkleTreeFromTransactions(dummyTransactions);
-            const root = merkleTree.getRoot(); // Root is already a hex string
+            const dummyProof = ["0x0000000000000000000000000000000000000000000000000000000000000000"];
 
-            await submitBatchWithMerkleRoot(root);
+            await reportFraudWithMerkleProof(
+                selectedBatch.id,
+                "0x0000000000000000000000000000000000000000000000000000000000000000",
+                dummyTransaction,
+                dummyProof
+            );
 
             toast({
-                title: "Batch Submitted",
-                description: "Batch submitted successfully",
+                title: "Fraud Reported",
+                description: "Fraud report submitted successfully",
             });
-
-            // Refresh batches
-            const fetchedBatches = await getBatches();
-            setBatches(fetchedBatches);
         } catch (error) {
-            console.error("Error submitting batch:", error);
+            console.error("Error reporting fraud:", error);
             toast({
                 title: "Error",
-                description: "Failed to submit batch",
-                variant: "destructive",
-            });
-        } finally {
-            setIsLoading(false);
-        }
-    };
-
-    const handleVerifyBatch = async () => {
-        if (!selectedBatch || !isAdminUser) return;
-
-        setIsLoading(true);
-        try {
-            await verifyBatch(parseInt(selectedBatch.id));
-
-            toast({
-                title: "Batch Verified",
-                description: "Batch verified successfully",
-            });
-
-            // Refresh batches
-            const fetchedBatches = await getBatches();
-            setBatches(fetchedBatches);
-        } catch (error) {
-            console.error("Error verifying batch:", error);
-            toast({
-                title: "Error",
-                description: "Failed to verify batch",
-                variant: "destructive",
-            });
-        } finally {
-            setIsLoading(false);
-        }
-    };
-
-    const handleFinalizeBatch = async () => {
-        if (!selectedBatch || !isAdminUser) return;
-
-        setIsLoading(true);
-        try {
-            await finalizeBatch(parseInt(selectedBatch.id));
-
-            toast({
-                title: "Batch Finalized",
-                description: "Batch finalized successfully",
-            });
-
-            // Refresh batches
-            const fetchedBatches = await getBatches();
-            setBatches(fetchedBatches);
-        } catch (error: any) {
-            console.error("Error finalizing batch:", error);
-            let errorMessage = "Failed to finalize batch";
-
-            // Check for challenge period error
-            if (error.message?.includes("Challenge period not over")) {
-                const batchTimestamp = parseInt(selectedBatch.timestamp);
-                const currentTime = Math.floor(Date.now() / 1000);
-                const timeLeft = (batchTimestamp + 7 * 24 * 60 * 60) - currentTime;
-                const daysLeft = Math.ceil(timeLeft / (24 * 60 * 60));
-
-                errorMessage = `Cannot finalize batch yet. Challenge period of 1 week must pass. ${daysLeft} days remaining.`;
-            }
-
-            toast({
-                title: "Error",
-                description: errorMessage,
+                description: "Failed to report fraud",
                 variant: "destructive",
             });
         } finally {
@@ -203,7 +129,7 @@ const AdminBatchManager = () => {
             <Card className="glass-card border border-white/10 backdrop-blur-md bg-black/30">
                 <CardContent className="py-8">
                     <div className="text-center text-white/70">
-                        Please connect your wallet to manage batches
+                        Please connect your wallet to view Merkle tree information
                     </div>
                 </CardContent>
             </Card>
@@ -230,7 +156,7 @@ const AdminBatchManager = () => {
                         <AlertCircle className="h-4 w-4" />
                         <AlertTitle>Access Denied</AlertTitle>
                         <AlertDescription>
-                            Only admin users can manage batches.
+                            Only admin users can view and manage Merkle trees.
                         </AlertDescription>
                     </Alert>
                 </CardContent>
@@ -242,22 +168,14 @@ const AdminBatchManager = () => {
         <Card className="glass-card border border-white/10 backdrop-blur-md bg-black/30">
             <CardHeader>
                 <CardTitle className="text-2xl bg-gradient-to-r from-purple-400 to-pink-500 bg-clip-text text-transparent">
-                    Batch Manager
+                    Merkle Tree Information
                 </CardTitle>
                 <CardDescription className="text-white/70">
-                    Manage transaction batches and Merkle trees
+                    View and verify Merkle trees for transaction batches
                 </CardDescription>
             </CardHeader>
             <CardContent>
                 <div className="space-y-6">
-                    <Button
-                        onClick={handleSubmitBatch}
-                        disabled={isLoading}
-                        className="w-full bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white transition-all duration-200"
-                    >
-                        {isLoading ? "Submitting..." : "Submit New Batch"}
-                    </Button>
-
                     <div className="space-y-4">
                         <h3 className="text-lg font-medium text-white">Transaction Batches</h3>
                         {batches.length === 0 ? (
@@ -285,29 +203,33 @@ const AdminBatchManager = () => {
 
                     {selectedBatch && (
                         <div className="space-y-4">
-                            <h3 className="text-lg font-medium text-white">Batch Actions</h3>
-                            <div className="grid grid-cols-2 gap-4">
-                                <Button
-                                    onClick={handleVerifyBatch}
-                                    disabled={isLoading || selectedBatch.verified}
-                                    className="w-full bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 text-white transition-all duration-200"
-                                >
-                                    {isLoading ? "Verifying..." : "Verify Batch"}
-                                </Button>
-                                <Button
-                                    onClick={handleFinalizeBatch}
-                                    disabled={isLoading || selectedBatch.finalized}
-                                    className="w-full bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 text-white transition-all duration-200"
-                                >
-                                    {isLoading ? "Finalizing..." : "Finalize Batch"}
-                                </Button>
+                            <h3 className="text-lg font-medium text-white">Batch Details</h3>
+                            <div className="space-y-2">
+                                <div className="flex justify-between">
+                                    <span className="text-white/70">Batch ID:</span>
+                                    <span className="text-white">{selectedBatch.id}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span className="text-white/70">Status:</span>
+                                    <span className="text-white">{selectedBatch.verified ? 'Verified' : selectedBatch.finalized ? 'Finalized' : 'Pending'}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span className="text-white/70">Timestamp:</span>
+                                    <span className="text-white">{new Date(parseInt(selectedBatch.timestamp) * 1000).toLocaleString()}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span className="text-white/70">Merkle Root:</span>
+                                    <span className="text-white font-mono text-xs break-all">{selectedBatch.transactionsRoot}</span>
+                                </div>
                             </div>
-                        </div>
-                    )}
 
-                    {selectedBatch && (
-                        <div className="mt-6">
-                            <BatchDetails batch={selectedBatch} />
+                            <Button
+                                onClick={handleReportFraud}
+                                disabled={isLoading || selectedBatch.finalized}
+                                className="w-full bg-gradient-to-r from-red-500 to-pink-500 hover:from-red-600 hover:to-pink-600 text-white transition-all duration-200"
+                            >
+                                {isLoading ? "Reporting Fraud..." : "Report Fraud"}
+                            </Button>
                         </div>
                     )}
                 </div>
@@ -316,4 +238,4 @@ const AdminBatchManager = () => {
     );
 };
 
-export default AdminBatchManager; 
+export default MerkleTreeInfo; 

@@ -2,7 +2,7 @@ import { useAccount } from "wagmi";
 import { useState } from "react";
 import DepositCard from "@/components/DepositCard";
 import NetworkStatus from "@/components/NetworkStatus";
-import TransactionTracker from "@/components/TransactionTracker";
+import { TransactionTracker } from "@/components/TransactionTracker";
 import BatchSubmission from "@/components/BatchSubmission";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";

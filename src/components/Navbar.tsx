@@ -1,100 +1,14 @@
-
+import { Link } from 'react-router-dom';
 import { Button } from "@/components/ui/button";
-import { useToast } from "@/components/ui/use-toast";
-import { connectWallet, getUserBalance, switchNetwork, getNetworkName } from "@/lib/ethers";
-import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { useWallet } from "@/hooks/useWallet";
+import { toast } from "@/components/ui/use-toast";
 
-const Navbar = () => {
-  const [wallet, setWallet] = useState<{
-    address: string;
-    network: string;
-    ethBalance: string;
-    l2Balance: string;
-  } | null>(null);
-  const [isConnecting, setIsConnecting] = useState(false);
-  const { toast } = useToast();
-
-  useEffect(() => {
-    // Check if user is already connected
-    const checkConnection = async () => {
-      try {
-        if (window.ethereum && window.ethereum.selectedAddress) {
-          const chainId = await window.ethereum.request({ method: "eth_chainId" });
-          const networkName = getNetworkName(chainId);
-          
-          const result = await connectWallet();
-          const balances = await getUserBalance(result.address);
-          setWallet({
-            ...result,
-            ethBalance: balances.ethBalance,
-            l2Balance: balances.l2Balance,
-          });
-          
-          // Automatically try to switch to Sepolia if on unknown network
-          if (networkName === "unknown") {
-            await switchNetwork("sepolia");
-          }
-        }
-      } catch (error) {
-        console.error("Connection check failed:", error);
-      }
-    };
-
-    checkConnection();
-
-    // Listen for account changes
-    if (window.ethereum) {
-      window.ethereum.on("accountsChanged", async (accounts: string[]) => {
-        if (accounts.length === 0) {
-          setWallet(null);
-        } else {
-          const result = await connectWallet();
-          const balances = await getUserBalance(result.address);
-          setWallet({
-            ...result,
-            ethBalance: balances.ethBalance,
-            l2Balance: balances.l2Balance,
-          });
-        }
-      });
-
-      window.ethereum.on("chainChanged", async (chainId: string) => {
-        const networkName = getNetworkName(chainId);
-        if (window.ethereum.selectedAddress) {
-          const result = await connectWallet();
-          const balances = await getUserBalance(result.address);
-          setWallet({
-            ...result,
-            ethBalance: balances.ethBalance,
-            l2Balance: balances.l2Balance,
-          });
-        }
-      });
-    }
-
-    return () => {
-      if (window.ethereum) {
-        window.ethereum.removeAllListeners("accountsChanged");
-        window.ethereum.removeAllListeners("chainChanged");
-      }
-    };
-  }, []);
+export default function Navbar() {
+  const { address, isConnected, isConnecting, connect, disconnect } = useWallet();
 
   const handleConnect = async () => {
     try {
-      setIsConnecting(true);
-      const result = await connectWallet();
-      const balances = await getUserBalance(result.address);
-      setWallet({
-        ...result,
-        ethBalance: balances.ethBalance,
-        l2Balance: balances.l2Balance,
-      });
-      toast({
-        title: "Wallet Connected",
-        description: `Connected to ${result.address.slice(0, 6)}...${result.address.slice(-4)}`,
-      });
+      await connect();
     } catch (error) {
       console.error("Connection failed:", error);
       toast({
@@ -102,83 +16,69 @@ const Navbar = () => {
         description: error instanceof Error ? error.message : "Failed to connect wallet",
         variant: "destructive",
       });
-    } finally {
-      setIsConnecting(false);
-    }
-  };
-
-  const handleSwitchToSepolia = async () => {
-    const success = await switchNetwork("sepolia");
-    if (success) {
-      toast({
-        title: "Network Switched",
-        description: "Successfully switched to Sepolia testnet",
-      });
-    } else {
-      toast({
-        title: "Network Switch Failed",
-        description: "Failed to switch to Sepolia testnet",
-        variant: "destructive",
-      });
     }
   };
 
   return (
-    <nav className="w-full py-4 px-6 flex justify-between items-center glass-card mb-6">
-      <div className="flex items-center space-x-2">
-        <Link to="/" className="text-xl font-bold bg-gradient-to-r from-l2-primary to-l2-secondary bg-clip-text text-transparent">
-          L2 Optimistic Rollup
-        </Link>
-      </div>
-
-      <div className="hidden md:flex items-center space-x-6">
-        <Link to="/" className="text-white/80 hover:text-white transition-colors">
-          Home
-        </Link>
-        <Link to="/transactions" className="text-white/80 hover:text-white transition-colors">
-          Transactions
-        </Link>
-        <Link to="/withdraw" className="text-white/80 hover:text-white transition-colors">
-          Withdraw
-        </Link>
-        <Link to="/admin" className="text-white/80 hover:text-white transition-colors">
-          Admin
-        </Link>
-      </div>
-
-      <div className="flex items-center space-x-4">
-        {wallet ? (
-          <div className="flex items-center space-x-4">
-            <div className="text-sm text-right">
-              <p className="text-xs text-white/60">
-                Network: <span className="text-white/90">{wallet.network}</span>
-              </p>
-              <p className="text-xs text-white/60">
-                ETH: <span className="text-white/90">{Number(wallet.ethBalance).toFixed(4)}</span>
-              </p>
-              <p className="text-xs text-white/60">
-                L2: <span className="text-white/90">{Number(wallet.l2Balance).toFixed(4)}</span>
-              </p>
-            </div>
-            <div className="flex flex-col space-y-2">
-              <Button variant="outline" size="sm" className="border-l2-primary text-l2-primary">
-                {wallet.address.slice(0, 6)}...{wallet.address.slice(-4)}
-              </Button>
-              {wallet.network !== "sepolia" && (
-                <Button variant="outline" size="sm" onClick={handleSwitchToSepolia} className="border-l2-secondary text-l2-secondary">
-                  Switch to Sepolia
-                </Button>
-              )}
-            </div>
+    <nav className="backdrop-blur-md bg-black/30 border-b border-white/10">
+      <div className="container mx-auto px-6 py-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-8">
+            <Link
+              to="/"
+              className="text-2xl font-bold bg-gradient-to-r from-purple-400 via-pink-500 to-purple-600 bg-clip-text text-transparent hover:from-purple-500 hover:via-pink-600 hover:to-purple-700 transition-all duration-300"
+            >
+              Layer 2 Scaling
+            </Link>
+            {isConnected && (
+              <div className="flex space-x-6">
+                <Link
+                  to="/transactions"
+                  className="text-white/70 hover:text-white transition-colors duration-200"
+                >
+                  Transactions
+                </Link>
+                <Link
+                  to="/withdraw"
+                  className="text-white/70 hover:text-white transition-colors duration-200"
+                >
+                  Withdraw
+                </Link>
+                <Link
+                  to="/admin"
+                  className="text-white/70 hover:text-white transition-colors duration-200"
+                >
+                  Admin
+                </Link>
+              </div>
+            )}
           </div>
-        ) : (
-          <Button onClick={handleConnect} disabled={isConnecting} className="bg-gradient-to-r from-l2-primary to-l2-secondary text-white">
-            {isConnecting ? "Connecting..." : "Connect Wallet"}
-          </Button>
-        )}
+          <div className="flex items-center space-x-4">
+            {isConnected ? (
+              <>
+                <span className="text-sm text-white/70 bg-white/5 px-3 py-1 rounded-full">
+                  {address?.slice(0, 6)}...{address?.slice(-4)}
+                </span>
+                <Button
+                  variant="outline"
+                  onClick={disconnect}
+                  className="border-white/10 text-white/70 hover:text-white hover:border-white/20 transition-colors duration-200"
+                >
+                  Disconnect
+                </Button>
+              </>
+            ) : (
+              <Button
+                onClick={handleConnect}
+                disabled={isConnecting}
+                className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white transition-all duration-200"
+              >
+                {isConnecting ? "Connecting..." : "Connect Wallet"}
+              </Button>
+            )}
+          </div>
+        </div>
       </div>
     </nav>
   );
-};
-
-export default Navbar;
+}

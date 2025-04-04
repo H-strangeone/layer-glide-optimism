@@ -1,4 +1,4 @@
-import { keccak256, concat, getBytes, parseEther, AbiCoder } from "ethers";
+import { ethers } from 'ethers';
 
 export interface Transaction {
   sender: string;
@@ -7,116 +7,127 @@ export interface Transaction {
 }
 
 export class MerkleTree {
-  private leaves: string[] = [];
-  private layers: string[][] = [];
+  private elements: string[];
+  private bufferElementPositionIndex: { [hexElement: string]: number };
+  private layers: string[][];
 
-  constructor(transactions: Transaction[]) {
-    // Create leaf nodes
-    this.leaves = transactions.map(tx => this.hashTransaction(tx));
-    this.buildTree();
+  constructor(elements: string[]) {
+    this.elements = [...elements];
+    this.bufferElementPositionIndex = {};
+    this.layers = [];
+    this._initialize();
   }
 
-  private hashTransaction(transaction: Transaction): string {
-    // Use keccak256 to hash the concatenated and ABI encoded values
-    const abiCoder = new AbiCoder();
-    return keccak256(
-      abiCoder.encode(
-        ["address", "address", "uint256"],
-        [
-          transaction.sender.toLowerCase(),
-          transaction.recipient.toLowerCase(),
-          parseEther(transaction.amount)
-        ]
-      )
-    );
+  private _initialize() {
+    this.elements = this.elements.filter(Boolean);
+    this.elements.sort();
+    this._removeDuplicates();
+
+    this._createLayers();
   }
 
-  private buildTree(): void {
-    this.layers = [this.leaves];
+  private _removeDuplicates() {
+    this.elements = this.elements.filter((item, pos) => {
+      return this.elements.indexOf(item) === pos;
+    });
+  }
 
-    // Build the Merkle tree bottom-up
+  private _createLayers() {
+    this.layers = [this.elements];
+
     while (this.layers[this.layers.length - 1].length > 1) {
-      const currentLayer = this.layers[this.layers.length - 1];
-      const nextLayer: string[] = [];
-
-      for (let i = 0; i < currentLayer.length; i += 2) {
-        if (i + 1 < currentLayer.length) {
-          const left = currentLayer[i];
-          const right = currentLayer[i + 1];
-          nextLayer.push(this.hashPair(left, right));
-        } else {
-          // If odd number of elements, duplicate the last one
-          nextLayer.push(currentLayer[i]);
-        }
-      }
-
-      this.layers.push(nextLayer);
+      this.layers.push(this._getNextLayer());
     }
   }
 
-  private hashPair(left: string, right: string): string {
-    // Sort hashes to ensure consistent ordering
-    const [first, second] = [left, right].sort();
-    return keccak256(
-      concat([
-        getBytes(first),
-        getBytes(second)
-      ])
-    );
+  private _getNextLayer(): string[] {
+    const layer = this.layers[this.layers.length - 1];
+    const nextLayer = [];
+
+    for (let i = 0; i < layer.length; i += 2) {
+      if (i + 1 === layer.length) {
+        nextLayer.push(layer[i]);
+      } else {
+        nextLayer.push(this._hashPair(layer[i], layer[i + 1]));
+      }
+    }
+
+    return nextLayer;
+  }
+
+  private _hashPair(a: string, b: string): string {
+    return a < b
+      ? ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['bytes32', 'bytes32'], [a, b]))
+      : ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['bytes32', 'bytes32'], [b, a]));
   }
 
   public getRoot(): string {
     return this.layers[this.layers.length - 1][0];
   }
 
-  public getProof(index: number): string[] {
-    if (index < 0 || index >= this.leaves.length) {
-      throw new Error('Index out of range');
-    }
-
+  public getProof(element: string): string[] {
+    let index = this._getBufferElementPositionIndex(element);
     const proof: string[] = [];
-    let currentIndex = index;
 
     for (let i = 0; i < this.layers.length - 1; i++) {
-      const currentLayer = this.layers[i];
-      const isRightNode = currentIndex % 2 === 0;
-      const siblingIndex = isRightNode ? currentIndex + 1 : currentIndex - 1;
+      const layer = this.layers[i];
+      const isRightNode = index % 2 === 1;
+      const pairIndex = isRightNode ? index - 1 : index + 1;
 
-      if (siblingIndex < currentLayer.length) {
-        proof.push(currentLayer[siblingIndex]);
+      if (pairIndex < layer.length) {
+        proof.push(layer[pairIndex]);
       }
 
-      // Update index for the next layer
-      currentIndex = Math.floor(currentIndex / 2);
+      index = Math.floor(index / 2);
     }
 
     return proof;
   }
 
-  public verifyProof(transaction: Transaction, proof: string[]): boolean {
-    let currentHash = this.hashTransaction(transaction);
-
-    for (const proofElement of proof) {
-      currentHash = this.hashPair(currentHash, proofElement);
+  private _getBufferElementPositionIndex(element: string): number {
+    const index = this.bufferElementPositionIndex[element];
+    if (typeof index !== 'number') {
+      throw new Error('Element not found in Merkle tree');
     }
-
-    return currentHash === this.getRoot();
+    return index;
   }
 }
 
-// Helper function to create a Merkle tree from transactions
-export const createMerkleTreeFromTransactions = (transactions: Transaction[]): MerkleTree => {
-  return new MerkleTree(transactions);
-};
+export function createMerkleTreeFromTransactions(transactions: Transaction[]): MerkleTree {
+  const elements = transactions.map(tx =>
+    ethers.keccak256(
+      ethers.AbiCoder.defaultAbiCoder().encode(
+        ['address', 'address', 'uint256'],
+        [tx.sender, tx.recipient, ethers.parseEther(tx.amount)]
+      )
+    )
+  );
 
-// Helper function to get transaction root
-export const getTransactionRoot = (transactions: Transaction[]): string => {
-  const tree = createMerkleTreeFromTransactions(transactions);
-  return tree.getRoot();
-};
+  return new MerkleTree(elements);
+}
 
-// Helper function to get proof for a transaction
-export const getProofForTransaction = (transactions: Transaction[], index: number): string[] => {
-  const tree = createMerkleTreeFromTransactions(transactions);
-  return tree.getProof(index);
-};
+export function verifyMerkleProof(
+  leaf: string,
+  proof: string[],
+  root: string
+): boolean {
+  let computedHash = leaf;
+
+  for (let i = 0; i < proof.length; i++) {
+    const proofElement = proof[i];
+    computedHash = computedHash < proofElement
+      ? ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['bytes32', 'bytes32'], [computedHash, proofElement]))
+      : ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['bytes32', 'bytes32'], [proofElement, computedHash]));
+  }
+
+  return computedHash === root;
+}
+
+export function hashTransaction(tx: Transaction): string {
+  return ethers.keccak256(
+    ethers.AbiCoder.defaultAbiCoder().encode(
+      ['address', 'address', 'uint256'],
+      [tx.sender, tx.recipient, ethers.parseEther(tx.amount)]
+    )
+  );
+}
