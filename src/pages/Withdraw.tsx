@@ -3,7 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/components/ui/use-toast";
-import { getLayer1Balance, getLayer2Balance, withdrawFunds } from "@/lib/ethers";
+import { getUserBalance, getLayer1Balance, getLayer2Balance, withdrawFunds } from "@/lib/ethers";
 import { useEffect, useState } from "react";
 import { useWallet } from "@/hooks/useWallet";
 

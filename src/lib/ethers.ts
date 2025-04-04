@@ -29,7 +29,7 @@ const contractABI = [
 // Contract addresses - replace with your deployed contract address
 export const CONTRACT_ADDRESS = {
   sepolia: "0xff7c362B5004d2d78364D0a5c98649643A2f7CB7",
-  localhost: "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0"  // Local Hardhat deployment
+  localhost: "0x5FbDB2315678afecb367f032d93F642f64180aa3"  // Local Hardhat deployment
 };
 
 // Network settings

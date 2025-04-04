@@ -7,11 +7,7 @@ import { depositFunds, getLayer1Balance, getLayer2Balance } from "@/lib/ethers";
 import { toast } from "@/components/ui/use-toast";
 import { Progress } from "@/components/ui/progress";
 
-interface DepositCardProps {
-  onSuccess?: () => void;
-}
-
-export default function DepositCard({ onSuccess }: DepositCardProps) {
+export default function DepositCard() {
   const { address, isConnected } = useWallet();
   const [amount, setAmount] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -40,15 +36,6 @@ export default function DepositCard({ onSuccess }: DepositCardProps) {
   }, [address, isConnected]);
 
   const handleDeposit = async () => {
-    if (!isConnected) {
-      toast({
-        title: "Wallet Not Connected",
-        description: "Please connect your wallet to deposit funds",
-        variant: "destructive",
-      });
-      return;
-    }
-
     if (!amount || isNaN(Number(amount)) || Number(amount) <= 0) {
       toast({
         title: "Invalid Amount",
@@ -61,19 +48,20 @@ export default function DepositCard({ onSuccess }: DepositCardProps) {
     if (Number(amount) > Number(layer1Balance)) {
       toast({
         title: "Insufficient Balance",
-        description: `Your L1 balance (${Number(layer1Balance).toFixed(4)} ETH) is less than the requested amount`,
+        description: `Your Layer 1 balance (${Number(layer1Balance).toFixed(4)} ETH) is less than the requested amount`,
         variant: "destructive",
       });
       return;
     }
 
+    setIsLoading(true);
     try {
-      setIsLoading(true);
       await depositFunds(amount);
       toast({
         title: "Deposit Successful",
         description: `Successfully deposited ${amount} ETH to Layer 2`,
       });
+      setAmount("");
 
       // Refresh balances after deposit
       if (address) {
@@ -81,13 +69,6 @@ export default function DepositCard({ onSuccess }: DepositCardProps) {
         const l2Balance = await getLayer2Balance(address);
         setLayer1Balance(l1Balance || "0");
         setLayer2Balance(l2Balance || "0");
-      }
-
-      setAmount("");
-
-      // Call onSuccess callback if provided
-      if (onSuccess) {
-        onSuccess();
       }
     } catch (error) {
       console.error("Deposit error:", error);
