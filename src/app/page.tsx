@@ -9,7 +9,7 @@ import TransactionFlow from "@/components/TransactionFlow";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 export default function Home() {
-    const { isConnected } = useWallet();
+    const { isConnected, address } = useWallet();
 
     if (!isConnected) {
         return (
@@ -52,7 +52,7 @@ export default function Home() {
                             <CardDescription>View your recent transactions</CardDescription>
                         </CardHeader>
                         <CardContent>
-                            <TransactionTracker />
+                            {address && <TransactionTracker address={address} />}
                         </CardContent>
                     </Card>
                 </div>
