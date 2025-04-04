@@ -1,26 +1,41 @@
 import { useAccount } from "wagmi";
 import { useState } from "react";
 import DepositCard from "@/components/DepositCard";
-import { NetworkStatus } from "@/components/NetworkStatus";
+import NetworkStatus from "@/components/NetworkStatus";
 import TransactionTracker from "@/components/TransactionTracker";
 import BatchSubmission from "@/components/BatchSubmission";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
+import { useWallet } from "@/hooks/useWallet";
 
 export default function Index() {
   const { address } = useAccount();
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const { isConnected } = useWallet();
 
   const handleSuccess = () => {
     // Trigger a refresh of all components
     setRefreshTrigger(prev => prev + 1);
   };
 
+  if (!isConnected) {
+    return null;
+  }
+
   return (
     <div className="container mx-auto p-4 space-y-6">
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left Column */}
         <div className="lg:col-span-2 space-y-6">
-          <NetworkStatus />
+          <Card>
+            <CardHeader>
+              <CardTitle>Network Status</CardTitle>
+              <CardDescription>Current network information and batch status</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <NetworkStatus />
+            </CardContent>
+          </Card>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <DepositCard onSuccess={handleSuccess} />
             <BatchSubmission onSuccess={handleSuccess} />

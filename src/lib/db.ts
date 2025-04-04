@@ -21,6 +21,16 @@ export interface BalanceData {
     layer2: string;
 }
 
+export interface Transaction {
+    id: string;
+    from: string;
+    to: string;
+    amount: string;
+    timestamp: Date;
+    status: 'pending' | 'completed' | 'failed';
+    type: 'deposit' | 'withdrawal';
+}
+
 export const db = {
     // Transaction operations
     async createTransaction(data: TransactionData) {
@@ -104,5 +114,39 @@ export const db = {
         return prisma.batch.findUnique({
             where: { batchId }
         });
+    }
+};
+
+export const createTransaction = async (transaction: Omit<Transaction, 'id' | 'timestamp'>) => {
+    try {
+        const response = await fetch('/api/transactions', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(transaction),
+        });
+
+        if (!response.ok) {
+            throw new Error('Failed to create transaction');
+        }
+
+        return await response.json();
+    } catch (error) {
+        console.error('Error creating transaction:', error);
+        throw error;
+    }
+};
+
+export const getTransactions = async (): Promise<Transaction[]> => {
+    try {
+        const response = await fetch('/api/transactions');
+        if (!response.ok) {
+            throw new Error('Failed to fetch transactions');
+        }
+        return await response.json();
+    } catch (error) {
+        console.error('Error fetching transactions:', error);
+        throw error;
     }
 }; 

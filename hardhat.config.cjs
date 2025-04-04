@@ -12,7 +12,7 @@ const PRIVATE_KEY = process.env.PRIVATE_KEY || "your_private_key";
 
 /** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {
-  solidity: "0.8.19",
+  solidity: "0.8.20",
   networks: {
     hardhat: {
       accounts: [
@@ -42,10 +42,12 @@ module.exports = {
     localhost: {
       url: "http://127.0.0.1:8545",
       chainId: 1337,
+      accounts: [process.env.PRIVATE_KEY || ""]
     },
     sepolia: {
-      url: "https://eth-sepolia.g.alchemy.com/v2/demo",
-      chainId: 11155111
+      url: `https://eth-sepolia.g.alchemy.com/v2/${ALCHEMY_API_KEY}`,
+      chainId: 11155111,
+      accounts: [process.env.PRIVATE_KEY || ""]
     },
   },
   paths: {
@@ -54,4 +56,7 @@ module.exports = {
     sources: "./contracts",
     tests: "./test",
   },
+  etherscan: {
+    apiKey: process.env.ETHERSCAN_API_KEY
+  }
 };

@@ -3,65 +3,43 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/components/ui/use-toast";
-import { getUserBalance, withdrawFunds } from "@/lib/ethers";
+import { getUserBalance, getLayer1Balance, getLayer2Balance, withdrawFunds } from "@/lib/ethers";
 import { useEffect, useState } from "react";
+import { useWallet } from "@/hooks/useWallet";
 
 const Withdraw = () => {
-  const [wallet, setWallet] = useState<{
-    address: string;
-    ethBalance: string;
-    l2Balance: string;
-  } | null>(null);
+  const { address, isConnected } = useWallet();
+  const [layer1Balance, setLayer1Balance] = useState<string>("0");
+  const [layer2Balance, setLayer2Balance] = useState<string>("0");
   const [amount, setAmount] = useState("");
   const [isWithdrawing, setIsWithdrawing] = useState(false);
   const { toast } = useToast();
 
   useEffect(() => {
-    // Check if user is already connected
-    const checkConnection = async () => {
+    const updateBalances = async () => {
+      if (!isConnected || !address) return;
+
       try {
-        if (window.ethereum && window.ethereum.selectedAddress) {
-          const address = window.ethereum.selectedAddress;
-          const balances = await getUserBalance(address);
+        const l1Balance = await getLayer1Balance(address);
+        const l2Balance = await getLayer2Balance(address);
 
-          setWallet({
-            address,
-            ethBalance: balances.ethBalance,
-            l2Balance: balances.l2Balance,
-          });
-        }
+        setLayer1Balance(l1Balance || "0");
+        setLayer2Balance(l2Balance || "0");
       } catch (error) {
-        console.error("Connection check failed:", error);
+        console.error("Failed to fetch balances:", error);
+        setLayer1Balance("0");
+        setLayer2Balance("0");
       }
     };
 
-    checkConnection();
+    updateBalances();
+    const interval = setInterval(updateBalances, 10000); // Update every 10 seconds
 
-    // Listen for account changes
-    if (window.ethereum) {
-      window.ethereum.on("accountsChanged", async (accounts: string[]) => {
-        if (accounts.length === 0) {
-          setWallet(null);
-        } else {
-          const balances = await getUserBalance(accounts[0]);
-          setWallet({
-            address: accounts[0],
-            ethBalance: balances.ethBalance,
-            l2Balance: balances.l2Balance,
-          });
-        }
-      });
-    }
-
-    return () => {
-      if (window.ethereum) {
-        window.ethereum.removeAllListeners("accountsChanged");
-      }
-    };
-  }, []);
+    return () => clearInterval(interval);
+  }, [address, isConnected]);
 
   const handleWithdraw = async () => {
-    if (!wallet) {
+    if (!isConnected) {
       toast({
         title: "Wallet Not Connected",
         description: "Please connect your wallet to withdraw funds",
@@ -79,10 +57,10 @@ const Withdraw = () => {
       return;
     }
 
-    if (Number(amount) > Number(wallet.l2Balance)) {
+    if (Number(amount) > Number(layer2Balance)) {
       toast({
         title: "Insufficient Balance",
-        description: `Your L2 balance (${wallet.l2Balance} ETH) is less than the requested amount`,
+        description: `Your L2 balance (${Number(layer2Balance).toFixed(4)} ETH) is less than the requested amount`,
         variant: "destructive",
       });
       return;
@@ -96,14 +74,12 @@ const Withdraw = () => {
         description: `Successfully initiated withdrawal of ${amount} ETH to Layer 1`,
       });
 
-      // Refresh balance after withdrawal
-      if (wallet.address) {
-        const balances = await getUserBalance(wallet.address);
-        setWallet({
-          ...wallet,
-          ethBalance: balances.ethBalance,
-          l2Balance: balances.l2Balance,
-        });
+      // Refresh balances after withdrawal
+      if (address) {
+        const l1Balance = await getLayer1Balance(address);
+        const l2Balance = await getLayer2Balance(address);
+        setLayer1Balance(l1Balance);
+        setLayer2Balance(l2Balance);
       }
 
       setAmount("");
@@ -120,15 +96,27 @@ const Withdraw = () => {
   };
 
   const setMaxAmount = () => {
-    if (wallet) {
-      setAmount(wallet.l2Balance);
-    }
+    setAmount(layer2Balance);
   };
 
+  if (!isConnected) {
+    return (
+      <div className="container mx-auto px-4 py-8">
+        <Card className="glass-card">
+          <CardContent className="py-8">
+            <div className="text-center text-white/70">
+              Please connect your wallet to withdraw funds
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   return (
-    <div className="container mx-auto">
+    <div className="container mx-auto px-4 py-8">
       <div className="mb-8">
-        <h1 className="text-4xl font-bold mb-2 bg-gradient-to-r from-l2-primary to-l2-secondary bg-clip-text text-transparent">
+        <h1 className="text-4xl font-bold mb-2 bg-gradient-to-r from-purple-400 via-pink-500 to-purple-600 bg-clip-text text-transparent">
           Withdraw From Layer 2
         </h1>
         <p className="text-lg text-white/70">
@@ -138,106 +126,101 @@ const Withdraw = () => {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2">
-          <Card className="glass-card w-full">
+          <Card className="glass-card border border-white/10 backdrop-blur-md bg-black/30">
             <CardHeader>
-              <CardTitle className="text-2xl text-l2-primary">Withdraw to Layer 1</CardTitle>
-              <CardDescription>
+              <CardTitle className="text-2xl bg-gradient-to-r from-purple-400 to-pink-500 bg-clip-text text-transparent">
+                Withdraw to Layer 1
+              </CardTitle>
+              <CardDescription className="text-white/70">
                 Withdrawals are processed immediately but may take 1-2 minutes to finalize
               </CardDescription>
             </CardHeader>
             <CardContent>
-              {wallet ? (
-                <div className="space-y-6">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="bg-black/20 p-4 rounded-lg border border-white/10">
-                      <div className="text-sm text-white/70 mb-1">Layer 1 Balance</div>
-                      <div className="text-xl font-medium">{Number(wallet.ethBalance).toFixed(6)} ETH</div>
-                    </div>
-
-                    <div className="bg-black/20 p-4 rounded-lg border border-white/10">
-                      <div className="text-sm text-white/70 mb-1">Layer 2 Balance</div>
-                      <div className="text-xl font-medium">{Number(wallet.l2Balance).toFixed(6)} ETH</div>
+              <div className="space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="bg-white/5 p-4 rounded-lg border border-white/10 backdrop-blur-sm">
+                    <div className="text-sm text-white/70 mb-1">Layer 1 Balance</div>
+                    <div className="text-xl font-medium text-white">
+                      {Number(layer1Balance).toFixed(4)} ETH
                     </div>
                   </div>
 
-                  <div className="space-y-2">
-                    <div className="flex justify-between items-center">
-                      <label className="text-sm text-white/70">Amount to Withdraw (ETH)</label>
-                      <Button
-                        variant="link"
-                        size="sm"
-                        onClick={setMaxAmount}
-                        className="text-l2-primary p-0 h-auto"
-                      >
-                        Max
-                      </Button>
+                  <div className="bg-white/5 p-4 rounded-lg border border-white/10 backdrop-blur-sm">
+                    <div className="text-sm text-white/70 mb-1">Layer 2 Balance</div>
+                    <div className="text-xl font-medium text-white">
+                      {Number(layer2Balance).toFixed(4)} ETH
                     </div>
-                    <Input
-                      type="number"
-                      placeholder="0.01"
-                      value={amount}
-                      onChange={(e) => setAmount(e.target.value)}
-                      min="0"
-                      step="0.0001"
-                      className="bg-black/20 border-white/10"
-                      disabled={isWithdrawing}
-                    />
                   </div>
+                </div>
 
-                  <div>
+                <div className="space-y-2">
+                  <div className="flex justify-between items-center">
+                    <label className="text-sm text-white/70">Amount to Withdraw (ETH)</label>
                     <Button
-                      onClick={handleWithdraw}
-                      disabled={isWithdrawing || !amount}
-                      className="w-full bg-gradient-to-r from-l2-primary to-l2-secondary text-white"
+                      variant="link"
+                      size="sm"
+                      onClick={setMaxAmount}
+                      className="text-purple-400 hover:text-purple-300 p-0 h-auto"
                     >
-                      {isWithdrawing ? (
-                        <>
-                          <span className="mr-2">Withdrawing...</span>
-                          <Progress value={25} className="w-20 h-2 bg-white/10" />
-                        </>
-                      ) : (
-                        "Withdraw to Layer 1"
-                      )}
+                      Max
                     </Button>
                   </div>
+                  <Input
+                    type="number"
+                    placeholder="0.01"
+                    value={amount}
+                    onChange={(e) => setAmount(e.target.value)}
+                    min="0"
+                    step="0.0001"
+                    className="bg-white/5 border-white/10 text-white"
+                    disabled={isWithdrawing}
+                  />
                 </div>
-              ) : (
-                <div className="py-8 text-center text-white/60">
-                  Please connect your wallet to withdraw funds
-                </div>
-              )}
+
+                <Button
+                  onClick={handleWithdraw}
+                  disabled={isWithdrawing || !amount}
+                  className="w-full bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white transition-all duration-200"
+                >
+                  {isWithdrawing ? (
+                    <>
+                      <span className="mr-2">Withdrawing...</span>
+                      <Progress value={25} className="w-20 h-2 bg-white/10" />
+                    </>
+                  ) : (
+                    "Withdraw to Layer 1"
+                  )}
+                </Button>
+              </div>
             </CardContent>
           </Card>
         </div>
 
-        <div>
-          <Card className="glass-card w-full">
+        <div className="lg:col-span-1">
+          <Card className="glass-card border border-white/10 backdrop-blur-md bg-black/30">
             <CardHeader>
-              <CardTitle className="text-xl text-white">How Withdrawals Work</CardTitle>
+              <CardTitle className="text-xl bg-gradient-to-r from-purple-400 to-pink-500 bg-clip-text text-transparent">
+                How Withdrawals Work
+              </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="space-y-4 text-sm text-white/70">
-                <div className="space-y-1">
-                  <h3 className="font-medium text-white">Secure Withdrawals</h3>
-                  <p>
-                    When you withdraw from Layer 2, the funds are transferred back to your Layer 1 wallet address.
-                    This is secured by the same smart contract that handles deposits.
-                  </p>
+              <div className="space-y-4 text-white/70">
+                <div>
+                  <h3 className="font-medium text-white mb-1">Secure Withdrawals</h3>
+                  <p>When you withdraw from Layer 2, the funds are transferred back to your Layer 1 wallet address.</p>
                 </div>
-
-                <div className="space-y-1">
-                  <h3 className="font-medium text-white">Withdrawal Process:</h3>
-                  <ol className="list-decimal pl-5 space-y-1">
+                <div>
+                  <h3 className="font-medium text-white mb-1">Withdrawal Process</h3>
+                  <ol className="list-decimal list-inside space-y-2">
                     <li>Initiate a withdrawal request from this interface.</li>
                     <li>The Layer 2 contract verifies your balance.</li>
                     <li>Funds are transferred from the Layer 2 contract to your wallet.</li>
                     <li>Transaction is finalized on-chain.</li>
                   </ol>
                 </div>
-
-                <div className="space-y-1">
-                  <h3 className="font-medium text-white">Important Notes:</h3>
-                  <ul className="list-disc pl-5 space-y-1">
+                <div>
+                  <h3 className="font-medium text-white mb-1">Important Notes</h3>
+                  <ul className="list-disc list-inside space-y-1">
                     <li>Withdrawals are processed immediately but may take 1-2 minutes to finalize.</li>
                     <li>Gas fees apply for the withdrawal transaction.</li>
                     <li>You can only withdraw funds that have been fully verified on Layer 2.</li>
@@ -250,6 +233,6 @@ const Withdraw = () => {
       </div>
     </div>
   );
-};
+}
 
 export default Withdraw;

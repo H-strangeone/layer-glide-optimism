@@ -2,6 +2,9 @@ import { BrowserProvider, Contract, formatEther, parseEther, formatUnits, Transa
 
 import { toast } from "@/components/ui/use-toast";
 import { db } from './db';
+import { PrismaClient } from '@prisma/client';
+
+const prisma = new PrismaClient();
 
 // Layer2Scaling contract ABI
 const contractABI = [
@@ -26,7 +29,7 @@ const contractABI = [
 // Contract addresses - replace with your deployed contract address
 export const CONTRACT_ADDRESS = {
   sepolia: "0xff7c362B5004d2d78364D0a5c98649643A2f7CB7",
-  localhost: "0x5FbDB2315678afecb367f032d93F642f64180aa3"  // Local Hardhat deployment
+  localhost: "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0"  // Local Hardhat deployment
 };
 
 // Network settings
@@ -91,32 +94,35 @@ export const getNetworkName = (chainId: string | number): string => {
 // Connect to wallet
 export const connectWallet = async () => {
   try {
+    if (!window.ethereum) {
+      throw new Error("MetaMask is not installed");
+    }
+
     // Check if already connected
-    const isConnected = localStorage.getItem('walletConnected');
-    const lastConnectedAddress = localStorage.getItem('lastConnectedAddress');
+    const accounts = await window.ethereum.request({
+      method: "eth_accounts"
+    });
 
-    // If connected, verify it's still the same account
-    if (isConnected && lastConnectedAddress) {
-      const accounts = await window.ethereum.request({
-        method: "eth_accounts"
-      });
+    if (accounts.length > 0) {
+      // Already connected
+      const chainId = await window.ethereum.request({ method: "eth_chainId" });
+      const networkName = getNetworkName(chainId);
 
-      if (accounts[0]?.toLowerCase() === lastConnectedAddress.toLowerCase()) {
-        // Already connected to the same account
-        return {
-          address: accounts[0],
-          network: getNetworkName(await window.ethereum.request({ method: "eth_chainId" }))
-        };
-      }
+      localStorage.setItem('walletConnected', 'true');
+      localStorage.setItem('lastConnectedAddress', accounts[0]);
+
+      return {
+        address: accounts[0],
+        network: networkName
+      };
     }
 
     // Request new connection
-    const accounts = await window.ethereum.request({
-      method: "eth_requestAccounts",
-      params: [{ eth_accounts: {} }]
+    const newAccounts = await window.ethereum.request({
+      method: "eth_requestAccounts"
     });
 
-    if (accounts.length === 0) {
+    if (newAccounts.length === 0) {
       throw new Error("No accounts found");
     }
 
@@ -124,33 +130,12 @@ export const connectWallet = async () => {
     const chainId = await window.ethereum.request({ method: "eth_chainId" });
     const networkName = getNetworkName(chainId);
 
-    // Setup event listeners if not already set
-    if (!window.ethereum._eventsCount) {
-      window.ethereum.on('chainChanged', () => {
-        // Reload the page when network changes
-        window.location.reload();
-      });
-
-      window.ethereum.on('accountsChanged', (newAccounts: string[]) => {
-        if (newAccounts.length === 0) {
-          // Handle disconnection
-          localStorage.removeItem('walletConnected');
-          localStorage.removeItem('lastConnectedAddress');
-          window.location.reload();
-        } else {
-          // Handle account switch
-          localStorage.setItem('lastConnectedAddress', newAccounts[0]);
-          window.location.reload();
-        }
-      });
-    }
-
     // Store connection state
     localStorage.setItem('walletConnected', 'true');
-    localStorage.setItem('lastConnectedAddress', accounts[0]);
+    localStorage.setItem('lastConnectedAddress', newAccounts[0]);
 
     return {
-      address: accounts[0],
+      address: newAccounts[0],
       network: networkName
     };
   } catch (error) {
@@ -158,12 +143,6 @@ export const connectWallet = async () => {
     // Clear any stale connection state
     localStorage.removeItem('walletConnected');
     localStorage.removeItem('lastConnectedAddress');
-
-    toast({
-      title: "Connection Error",
-      description: error instanceof Error ? error.message : "Failed to connect wallet",
-      variant: "destructive",
-    });
     throw error;
   }
 };
@@ -288,112 +267,144 @@ export const switchNetwork = async (networkName: "sepolia" | "localhost") => {
   }
 };
 
-// Get contract instance
-export const getContract = async () => {
+// Track contract deployment
+const trackContractDeployment = async (address: string, network: string) => {
   try {
-    const provider = await getProvider();
-    const signer = await provider.getSigner() as JsonRpcSigner;
-    const chainId = await provider.send('eth_chainId', []);
+    // Deactivate previous deployments for this network
+    await prisma.contractDeployment.updateMany({
+      where: { network, isActive: true },
+      data: { isActive: false }
+    });
 
-    // Determine which contract address to use based on the network
-    let contractAddress;
-    if (chainId === NETWORK_SETTINGS.sepolia.chainId) {
-      contractAddress = CONTRACT_ADDRESS.sepolia;
-    } else if (chainId === NETWORK_SETTINGS.localhost.chainId) {
-      contractAddress = CONTRACT_ADDRESS.localhost;
-    } else {
-      throw new Error('Unsupported network');
+    // Create new deployment record
+    await prisma.contractDeployment.create({
+      data: {
+        address,
+        network,
+        isActive: true
+      }
+    });
+  } catch (error) {
+    console.error('Error tracking contract deployment:', error);
+  }
+};
+
+// Update Layer 2 balance in database via API
+const updateLayer2Balance = async (userAddress: string, contractAddress: string, balance: string) => {
+  try {
+    const response = await fetch('http://localhost:5500/api/balance/update', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify({
+        userAddress,
+        contractAddress,
+        balance
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      console.error('Balance update failed:', errorData);
+      throw new Error(`Failed to update balance: ${response.status}`);
     }
 
-    console.log('Using contract address:', contractAddress);
-    console.log('Signer address:', await signer.getAddress());
-
-    return new Contract(contractAddress, contractABI, signer);
+    return await response.json();
   } catch (error) {
-    console.error("Error getting contract:", error);
+    console.error('Error updating Layer 2 balance:', error);
     throw error;
   }
 };
 
-// Get user balance
-export const getUserBalance = async (address: string) => {
+// Get Layer 2 balance from both contract and database
+export const getLayer2Balance = async (address: string): Promise<string> => {
   try {
-    const provider = await getProvider();
     const contract = await getContract();
+    const contractBalance = await contract.balances(address);
+    const formattedBalance = formatEther(contractBalance);
 
-    console.log('Getting balances for address:', address);
+    // Update balance in database via API
+    try {
+      await updateLayer2Balance(address, contract.target as string, formattedBalance);
+    } catch (updateError) {
+      console.warn('Failed to update balance in database:', updateError);
+      // Continue with contract balance even if update fails
+    }
 
-    // Get L1 balance
-    const ethBalance = await provider.getBalance(address);
-    console.log('L1 balance:', formatEther(ethBalance), 'ETH');
-
-    // Get L2 balance from contract
-    const l2Balance = await contract.balances(address);
-    console.log('L2 balance:', formatEther(l2Balance), 'ETH');
-
-    return {
-      ethBalance: formatEther(ethBalance),
-      l2Balance: formatEther(l2Balance)
-    };
+    return formattedBalance;
   } catch (error) {
-    console.error("Error getting balance:", error);
-    console.error("Error details:", error instanceof Error ? error.message : error);
-    return {
-      ethBalance: "0",
-      l2Balance: "0"
-    };
+    console.error('Error getting Layer 2 balance:', error);
+
+    // Try to get balance from database as fallback
+    try {
+      const response = await fetch(`http://localhost:5500/api/balance/${address}`, {
+        headers: {
+          'Accept': 'application/json'
+        }
+      });
+
+      if (!response.ok) {
+        const errorData = await response.text();
+        console.error('Balance fetch failed:', errorData);
+        throw new Error(`Failed to fetch balance: ${response.status}`);
+      }
+
+      const data = await response.json();
+      return data.balance || '0';
+    } catch (dbError) {
+      console.error('Error getting balance from database:', dbError);
+      return '0';
+    }
   }
 };
 
-// Deposit funds to L2
-export const depositFunds = async (amount: string) => {
+// Update deposit function to track balances
+export const depositFunds = async (amount: string): Promise<void> => {
   try {
+    console.log('Starting deposit process...');
     const provider = await getProvider();
     const signer = await provider.getSigner();
-    const signerAddress = await signer.getAddress();
-    console.log("Signer address:", signerAddress);
 
-    const contract = await getContract();
-    console.log("Contract address:", contract.target);
+    if (!signer) {
+      throw new Error('No signer available');
+    }
 
-    // Convert amount to Wei
-    const amountWei = parseEther(amount);
+    const address = await signer.getAddress();
+    if (!address) {
+      throw new Error('No address available');
+    }
 
-    // Create transaction record in database
-    const tx = await db.createTransaction({
-      hash: '', // Will be updated after transaction
-      from: signerAddress,
-      to: contract.target as string,
-      amount: amount,
-      type: 'deposit',
-      layer: 'layer1',
-      status: 'pending'
-    });
+    const contract = new Contract(
+      CONTRACT_ADDRESS.localhost,
+      contractABI,
+      signer
+    );
 
-    // Send transaction
-    const txResponse = await contract.depositFunds({ value: amountWei });
-    console.log("Transaction sent:", txResponse.hash);
+    console.log('Contract target:', contract.target);
 
-    // Update transaction record with hash
-    await db.updateTransactionStatus(tx.hash, 'completed');
+    // Convert amount to wei
+    const amountInWei = parseEther(amount);
 
-    // Update balances
-    const currentBalance = await db.getBalance(signerAddress);
-    const newLayer1Balance = currentBalance
-      ? (BigInt(currentBalance.layer1) - amountWei).toString()
-      : (-amountWei).toString();
+    // Send the transaction with value
+    const tx = await contract.depositFunds({ value: amountInWei });
+    console.log('Transaction sent:', tx.hash);
 
-    const layer2Balance = currentBalance?.layer2 || '0';
-    await db.updateBalance(signerAddress, newLayer1Balance, layer2Balance);
+    // Wait for confirmation
+    const receipt = await tx.wait();
+    console.log('Transaction confirmed:', receipt);
+
+    // Update the Layer 2 balance
+    await updateLayer2Balance(address, contract.target as string, amount);
 
     toast({
       title: "Deposit Successful",
-      description: `Successfully deposited ${amount} ETH to Layer 2`,
+      description: `Successfully deposited ${amount} ETH to Layer 2. New balance: ${amount} ETH`,
     });
 
-    return txResponse;
   } catch (error) {
-    console.error("Deposit error:", error);
+    console.error('Deposit error:', error);
     toast({
       title: "Deposit Failed",
       description: error instanceof Error ? error.message : "Failed to deposit funds",
@@ -427,6 +438,15 @@ export interface Batch {
 // Get transaction batches
 export const getBatches = async (): Promise<Batch[]> => {
   try {
+    // First check if we have a connected account
+    const accounts = await window.ethereum.request({
+      method: "eth_accounts"
+    });
+
+    if (accounts.length === 0) {
+      return [];
+    }
+
     const provider = await getProvider();
     const contract = await getContract();
     const nextBatchId = await contract.nextBatchId();
@@ -579,7 +599,8 @@ export const submitBatch = async (transactionRoots: string[]) => {
   try {
     const contract = await getContract();
     const tx = await contract.submitBatch(transactionRoots);
-    return await tx.wait();
+    await tx.wait();
+    return tx;
   } catch (error) {
     console.error("Error submitting batch:", error);
     throw error;
@@ -590,16 +611,29 @@ export const submitBatch = async (transactionRoots: string[]) => {
 export const batchTransfer = async (recipients: string[], amounts: string[]) => {
   try {
     const contract = await getContract();
-    const totalAmount = amounts.reduce(
-      (sum, amount) => sum + parseEther(amount), // ✅ Use `+` instead of `.add()`
+
+    // Convert amounts to wei
+    const amountsInWei = amounts.map(a => parseEther(a));
+
+    // Calculate total amount to check against Layer 2 balance
+    const totalAmount = amountsInWei.reduce(
+      (sum, amount) => sum + amount,
       parseEther("0")
     );
 
+    // Get sender's Layer 2 balance
+    const signer = await contract.signer.getAddress();
+    const layer2Balance = await contract.balances(signer);
 
+    // Check if sender has enough Layer 2 balance
+    if (layer2Balance < totalAmount) {
+      throw new Error("Insufficient Layer 2 balance");
+    }
+
+    // Call batchTransfer without value parameter since we're using Layer 2 balance
     const tx = await contract.batchTransfer(
       recipients,
-      amounts.map(a => parseEther(a)),
-      { value: totalAmount }
+      amountsInWei
     );
 
     return await tx.wait();
@@ -614,10 +648,36 @@ export const verifyBatch = async (batchId: number) => {
   try {
     const contract = await getContract();
     const tx = await contract.verifyBatch(batchId);
-    return await tx.wait();
+    await tx.wait();
+    return tx;
   } catch (error) {
     console.error("Error verifying batch:", error);
     throw error;
+  }
+};
+
+// Finalize batch
+export const finalizeBatch = async (batchId: number) => {
+  try {
+    const contract = await getContract();
+    const tx = await contract.finalizeBatch(batchId);
+    await tx.wait();
+    return tx;
+  } catch (error) {
+    console.error("Error finalizing batch:", error);
+    throw error;
+  }
+};
+
+// Get next batch ID
+export const getNextBatchId = async (): Promise<number> => {
+  try {
+    const contract = await getContract();
+    const id = await contract.nextBatchId();
+    return Number(id);
+  } catch (error) {
+    console.error("Error getting next batch ID:", error);
+    return 0;
   }
 };
 
@@ -674,6 +734,43 @@ export const isAdmin = async (address: string): Promise<boolean> => {
   } catch (error) {
     console.error('Error checking admin status:', error);
     return false;
+  }
+};
+
+// Get contract instance
+export const getContract = async () => {
+  try {
+    if (!window.ethereum) {
+      throw new Error("MetaMask is not installed");
+    }
+
+    const provider = await getProvider();
+    const signer = await provider.getSigner();
+
+    if (!signer) {
+      throw new Error("No signer available. Please connect your wallet.");
+    }
+
+    const chainId = await provider.send('eth_chainId', []);
+    const network = chainId === NETWORK_SETTINGS.sepolia.chainId ? 'sepolia' : 'localhost';
+    const contractAddress = CONTRACT_ADDRESS[network as keyof typeof CONTRACT_ADDRESS];
+
+    return new Contract(contractAddress, contractABI, signer);
+  } catch (error) {
+    console.error("Error getting contract instance:", error);
+    throw error;
+  }
+};
+
+// Get Layer 1 balance for a user
+export const getLayer1Balance = async (address: string): Promise<string> => {
+  try {
+    const provider = await getProvider();
+    const balance = await provider.getBalance(address);
+    return formatEther(balance);
+  } catch (error) {
+    console.error('Error getting Layer 1 balance:', error);
+    return '0';
   }
 };
 

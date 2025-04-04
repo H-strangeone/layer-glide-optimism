@@ -1,6 +1,7 @@
+
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/use-toast";
-import { connectWallet, getUserBalance, switchNetwork, getNetworkName, disconnectWallet, getGasPrice } from "@/lib/ethers";
+import { connectWallet, getUserBalance, switchNetwork, getNetworkName } from "@/lib/ethers";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -10,41 +11,9 @@ const Navbar = () => {
     network: string;
     ethBalance: string;
     l2Balance: string;
-    gasPrice: string;
   } | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const { toast } = useToast();
-
-  // Update gas price and balances periodically
-  useEffect(() => {
-    let interval: NodeJS.Timeout;
-
-    const updateWalletInfo = async () => {
-      if (wallet?.address) {
-        try {
-          const balances = await getUserBalance(wallet.address);
-          const gasPrice = await getGasPrice();
-          setWallet(prev => prev ? {
-            ...prev,
-            ethBalance: balances.ethBalance,
-            l2Balance: balances.l2Balance,
-            gasPrice: gasPrice
-          } : null);
-        } catch (error) {
-          console.error("Error updating wallet info:", error);
-        }
-      }
-    };
-
-    if (wallet?.address) {
-      updateWalletInfo();
-      interval = setInterval(updateWalletInfo, 10000); // Update every 10 seconds
-    }
-
-    return () => {
-      if (interval) clearInterval(interval);
-    };
-  }, [wallet?.address]);
 
   useEffect(() => {
     // Check if user is already connected
@@ -53,17 +22,15 @@ const Navbar = () => {
         if (window.ethereum && window.ethereum.selectedAddress) {
           const chainId = await window.ethereum.request({ method: "eth_chainId" });
           const networkName = getNetworkName(chainId);
-
+          
           const result = await connectWallet();
           const balances = await getUserBalance(result.address);
-          const gasPrice = await getGasPrice();
           setWallet({
             ...result,
             ethBalance: balances.ethBalance,
             l2Balance: balances.l2Balance,
-            gasPrice: gasPrice
           });
-
+          
           // Automatically try to switch to Sepolia if on unknown network
           if (networkName === "unknown") {
             await switchNetwork("sepolia");
@@ -81,16 +48,13 @@ const Navbar = () => {
       window.ethereum.on("accountsChanged", async (accounts: string[]) => {
         if (accounts.length === 0) {
           setWallet(null);
-          await disconnectWallet();
         } else {
           const result = await connectWallet();
           const balances = await getUserBalance(result.address);
-          const gasPrice = await getGasPrice();
           setWallet({
             ...result,
             ethBalance: balances.ethBalance,
             l2Balance: balances.l2Balance,
-            gasPrice: gasPrice
           });
         }
       });
@@ -100,12 +64,10 @@ const Navbar = () => {
         if (window.ethereum.selectedAddress) {
           const result = await connectWallet();
           const balances = await getUserBalance(result.address);
-          const gasPrice = await getGasPrice();
           setWallet({
             ...result,
             ethBalance: balances.ethBalance,
             l2Balance: balances.l2Balance,
-            gasPrice: gasPrice
           });
         }
       });
@@ -124,12 +86,10 @@ const Navbar = () => {
       setIsConnecting(true);
       const result = await connectWallet();
       const balances = await getUserBalance(result.address);
-      const gasPrice = await getGasPrice();
       setWallet({
         ...result,
         ethBalance: balances.ethBalance,
         l2Balance: balances.l2Balance,
-        gasPrice: gasPrice
       });
       toast({
         title: "Wallet Connected",
@@ -144,24 +104,6 @@ const Navbar = () => {
       });
     } finally {
       setIsConnecting(false);
-    }
-  };
-
-  const handleDisconnect = async () => {
-    try {
-      await disconnectWallet();
-      setWallet(null);
-      toast({
-        title: "Wallet Disconnected",
-        description: "Successfully disconnected wallet",
-      });
-    } catch (error) {
-      console.error("Disconnection failed:", error);
-      toast({
-        title: "Disconnection Failed",
-        description: error instanceof Error ? error.message : "Failed to disconnect wallet",
-        variant: "destructive",
-      });
     }
   };
 
@@ -207,24 +149,30 @@ const Navbar = () => {
       <div className="flex items-center space-x-4">
         {wallet ? (
           <div className="flex items-center space-x-4">
-            <span className="text-sm text-white/80">
-              {wallet.address.slice(0, 6)}...{wallet.address.slice(-4)}
-            </span>
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={handleDisconnect}
-              className="bg-red-500/10 text-red-500 hover:bg-red-500/20"
-            >
-              Disconnect
-            </Button>
+            <div className="text-sm text-right">
+              <p className="text-xs text-white/60">
+                Network: <span className="text-white/90">{wallet.network}</span>
+              </p>
+              <p className="text-xs text-white/60">
+                ETH: <span className="text-white/90">{Number(wallet.ethBalance).toFixed(4)}</span>
+              </p>
+              <p className="text-xs text-white/60">
+                L2: <span className="text-white/90">{Number(wallet.l2Balance).toFixed(4)}</span>
+              </p>
+            </div>
+            <div className="flex flex-col space-y-2">
+              <Button variant="outline" size="sm" className="border-l2-primary text-l2-primary">
+                {wallet.address.slice(0, 6)}...{wallet.address.slice(-4)}
+              </Button>
+              {wallet.network !== "sepolia" && (
+                <Button variant="outline" size="sm" onClick={handleSwitchToSepolia} className="border-l2-secondary text-l2-secondary">
+                  Switch to Sepolia
+                </Button>
+              )}
+            </div>
           </div>
         ) : (
-          <Button
-            onClick={handleConnect}
-            disabled={isConnecting}
-            className="bg-l2-primary/10 text-l2-primary hover:bg-l2-primary/20"
-          >
+          <Button onClick={handleConnect} disabled={isConnecting} className="bg-gradient-to-r from-l2-primary to-l2-secondary text-white">
             {isConnecting ? "Connecting..." : "Connect Wallet"}
           </Button>
         )}

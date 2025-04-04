@@ -58,7 +58,7 @@ export const AdminBatchManager: React.FC = () => {
 
         setIsLoading(true);
         try {
-            await submitBatch(batchId);
+            await submitBatch([batchId.toString()]);
             toast({
                 title: "Success",
                 description: "Batch submitted successfully.",

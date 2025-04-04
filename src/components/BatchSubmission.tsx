@@ -7,6 +7,11 @@ import { batchTransfer, submitBatch } from "@/lib/ethers";
 import { submitTransactions } from "@/lib/api";
 import { useEffect, useState } from "react";
 import { createMerkleTreeFromTransactions, Transaction } from "@/lib/merkleTree";
+import { useWallet } from "@/hooks/useWallet";
+import { getLayer2Balance, getContract } from "@/lib/ethers";
+import { MerkleTree } from "@/lib/merkleTree";
+import { toast } from "@/components/ui/use-toast";
+import { ethers } from "ethers";
 
 interface BatchSubmissionProps {
   onSuccess?: () => void;
@@ -17,25 +22,134 @@ interface BatchTransaction {
   amount: string;
 }
 
+interface PendingTransaction {
+  id: number;
+  sender: string;
+  recipient: string;
+  amount: string;
+  status: 'pending' | 'submitted' | 'confirmed';
+  timestamp: string;
+}
+
 const BatchSubmission = ({ onSuccess }: BatchSubmissionProps) => {
+  const { address, isConnected } = useWallet();
   const [recipient, setRecipient] = useState("");
   const [amount, setAmount] = useState("");
   const [transactions, setTransactions] = useState<BatchTransaction[]>([]);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [gasEstimate, setGasEstimate] = useState("0.0001");
-  const { toast } = useToast();
+  const [layer2Balance, setLayer2Balance] = useState<string>("0");
+  const [isLoading, setIsLoading] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [pendingTransactions, setPendingTransactions] = useState<PendingTransaction[]>([]);
+  const [nextBatchId, setNextBatchId] = useState<number>(0);
 
-  // Update gas estimate based on number of transactions
   useEffect(() => {
-    // This is a simplified calculation for demo purposes
-    setGasEstimate((0.0001 * (transactions.length || 1)).toFixed(6));
-  }, [transactions]);
+    const fetchBalance = async () => {
+      if (address) {
+        const balance = await getLayer2Balance(address);
+        setLayer2Balance(balance);
+      }
+    };
+    fetchBalance();
+  }, [address]);
+
+  useEffect(() => {
+    const checkAdmin = async () => {
+      if (!isConnected || !address) return;
+
+      try {
+        const contract = await getContract();
+        const adminAddress = await contract.admin();
+        setIsAdmin(adminAddress.toLowerCase() === address.toLowerCase());
+      } catch (error) {
+        console.error('Error checking admin:', error);
+        toast({
+          title: "Admin Check Failed",
+          description: "Could not verify admin status",
+          variant: "destructive",
+        });
+      }
+    };
+
+    const fetchPendingTransactions = async () => {
+      if (!isAdmin) return;
+
+      try {
+        const response = await fetch('http://localhost:5500/api/transactions/pending');
+
+        // Clone the response for error logging if needed
+        const responseClone = response.clone();
+
+        if (!response.ok) {
+          const errorText = await responseClone.text();
+          console.error('API Error:', errorText);
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        if (!Array.isArray(data)) {
+          console.error('Unexpected response format:', data);
+          throw new TypeError("Expected array of transactions");
+        }
+
+        setPendingTransactions(data);
+
+        // Get next batch ID
+        const contract = await getContract();
+        const batchId = await contract.nextBatchId();
+        setNextBatchId(Number(batchId));
+      } catch (error) {
+        console.error('Error fetching pending transactions:', error);
+        toast({
+          title: "Error",
+          description: error instanceof Error ? error.message : "Failed to fetch pending transactions",
+          variant: "destructive",
+        });
+      }
+    };
+
+    checkAdmin();
+    if (isAdmin) {
+      fetchPendingTransactions();
+      const interval = setInterval(fetchPendingTransactions, 10000);
+      return () => clearInterval(interval);
+    }
+  }, [address, isConnected, isAdmin]);
 
   const handleAddTransaction = () => {
-    if (!recipient || !amount || isNaN(Number(amount)) || Number(amount) <= 0) {
+    if (!recipient || !amount) {
       toast({
         title: "Invalid Input",
-        description: "Please enter a valid recipient address and amount",
+        description: "Please enter both recipient and amount",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!ethers.isAddress(recipient)) {
+      toast({
+        title: "Invalid Address",
+        description: "Please enter a valid Ethereum address",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const amountNum = parseFloat(amount);
+    if (isNaN(amountNum) || amountNum <= 0) {
+      toast({
+        title: "Invalid Amount",
+        description: "Please enter a valid amount greater than 0",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const totalAmount = transactions.reduce((sum, tx) => sum + parseFloat(tx.amount), 0) + amountNum;
+    if (totalAmount > parseFloat(layer2Balance)) {
+      toast({
+        title: "Insufficient Balance",
+        description: `Total batch amount (${totalAmount} ETH) exceeds your Layer 2 balance (${layer2Balance} ETH)`,
         variant: "destructive",
       });
       return;
@@ -51,162 +165,198 @@ const BatchSubmission = ({ onSuccess }: BatchSubmissionProps) => {
   };
 
   const handleSubmitBatch = async () => {
-    if (transactions.length === 0) {
+    if (!isAdmin || pendingTransactions.length === 0) {
       toast({
-        title: "No Transactions",
-        description: "Please add at least one transaction to the batch",
+        title: "Cannot Submit Batch",
+        description: isAdmin ? "No pending transactions to submit" : "Only admin can submit batches",
         variant: "destructive",
       });
       return;
     }
 
-    setIsSubmitting(true);
+    setIsLoading(true);
     try {
-      // Convert BatchTransactions to Merkle tree Transactions
-      const merkleTransactions: Transaction[] = transactions.map(tx => ({
-        sender: window.ethereum.selectedAddress,
-        recipient: tx.recipient,
-        amount: tx.amount
-      }));
+      const contract = await getContract();
 
-      // Create Merkle tree and get root
-      const merkleTree = createMerkleTreeFromTransactions(merkleTransactions);
-      const root = merkleTree.getRoot();
+      // Create transaction roots
+      const transactionRoots = pendingTransactions.map(tx =>
+        ethers.keccak256(
+          ethers.AbiCoder.defaultAbiCoder().encode(
+            ["address", "address", "uint256"],
+            [tx.sender, tx.recipient, ethers.parseEther(tx.amount)]
+          )
+        )
+      );
 
-      // Submit batch with Merkle root
-      await submitBatch([root]);
+      const tx = await contract.submitBatch(transactionRoots);
+      await tx.wait();
 
       toast({
-        title: "Success",
-        description: "Batch submitted successfully",
+        title: "Batch Submitted",
+        description: `Successfully submitted batch #${nextBatchId}`,
       });
 
-      // Clear transactions after successful submission
-      setTransactions([]);
+      // Refresh pending transactions
+      const response = await fetch('/api/transactions/pending');
+      if (!response.ok) throw new Error('Failed to refresh transactions');
+      const data = await response.json();
+      setPendingTransactions(data);
 
-      if (onSuccess) {
-        onSuccess();
-      }
+      if (onSuccess) onSuccess();
     } catch (error) {
-      console.error("Error submitting batch:", error);
+      console.error('Error submitting batch:', error);
       toast({
         title: "Error",
         description: error instanceof Error ? error.message : "Failed to submit batch",
         variant: "destructive",
       });
     } finally {
-      setIsSubmitting(false);
+      setIsLoading(false);
     }
   };
 
-  const totalAmount = transactions.reduce(
-    (sum, tx) => sum + (isNaN(Number(tx.amount)) ? 0 : Number(tx.amount)),
-    0
-  );
+  const handleSubmit = async () => {
+    if (!recipient || !amount) {
+      toast({
+        title: "Invalid Input",
+        description: "Please enter both recipient address and amount",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!ethers.isAddress(recipient)) {
+      toast({
+        title: "Invalid Address",
+        description: "Please enter a valid Ethereum address",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      await batchTransfer([recipient], [amount]);
+      toast({
+        title: "Transaction Submitted",
+        description: "Your Layer 2 transaction has been submitted and will be included in the next batch",
+      });
+
+      setRecipient("");
+      setAmount("");
+      if (onSuccess) onSuccess();
+    } catch (error) {
+      console.error("Transaction error:", error);
+      toast({
+        title: "Transaction Failed",
+        description: error instanceof Error ? error.message : "Failed to submit transaction",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  if (!isConnected) {
+    return (
+      <Card className="glass-card border border-white/10 backdrop-blur-md bg-black/30">
+        <CardContent className="py-8">
+          <div className="text-center text-white/70">
+            Please connect your wallet to use batch submission
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
-    <Card className="glass-card w-full">
+    <Card className="glass-card border border-white/10 backdrop-blur-md bg-black/30">
       <CardHeader>
-        <CardTitle className="text-2xl text-l2-primary">Batch Transaction Submission</CardTitle>
-        <CardDescription>Submit multiple transactions in a single batch to save gas</CardDescription>
+        <CardTitle className="text-2xl bg-gradient-to-r from-purple-400 to-pink-500 bg-clip-text text-transparent">
+          {isAdmin ? "Batch Submission" : "Submit Transaction"}
+        </CardTitle>
+        <CardDescription className="text-white/70">
+          {isAdmin
+            ? "Submit pending transactions as a batch"
+            : "Submit a Layer 2 transaction to be included in the next batch"
+          }
+        </CardDescription>
       </CardHeader>
       <CardContent>
-        <div className="flex flex-col space-y-6">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="col-span-2">
-              <label className="text-sm text-white/70 mb-1 block">Recipient Address</label>
-              <Input
-                placeholder="0x..."
-                value={recipient}
-                onChange={(e) => setRecipient(e.target.value)}
-                className="bg-black/20 border-white/10"
-              />
-            </div>
-            <div>
-              <label className="text-sm text-white/70 mb-1 block">Amount (ETH)</label>
-              <Input
-                type="number"
-                placeholder="0.01"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-                min="0"
-                step="0.0001"
-                className="bg-black/20 border-white/10"
-              />
-            </div>
-          </div>
-
-          <div className="flex justify-end">
-            <Button
-              onClick={handleAddTransaction}
-              variant="outline"
-              className="border-l2-primary text-l2-primary"
-            >
-              Add Transaction
-            </Button>
-          </div>
-
-          {transactions.length > 0 && (
-            <div className="animate-fade-in-up">
-              <h3 className="text-lg font-medium mb-3">Transaction Preview</h3>
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-white/10">
-                    <TableHead className="text-white/70">#</TableHead>
-                    <TableHead className="text-white/70">Recipient</TableHead>
-                    <TableHead className="text-white/70">Amount (ETH)</TableHead>
-                    <TableHead className="text-white/70 text-right">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {transactions.map((tx, index) => (
-                    <TableRow key={index} className="border-white/10">
-                      <TableCell>{index + 1}</TableCell>
-                      <TableCell className="font-mono">
-                        {tx.recipient.slice(0, 6)}...{tx.recipient.slice(-4)}
-                      </TableCell>
-                      <TableCell>{tx.amount} ETH</TableCell>
-                      <TableCell className="text-right">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleRemoveTransaction(index)}
-                          className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
-                        >
-                          Remove
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-
-              <div className="mt-4 flex flex-col md:flex-row justify-between items-start md:items-center">
-                <div className="text-sm space-y-1 mb-4 md:mb-0">
-                  <p className="text-white/70">
-                    Total Transactions: <span className="text-white">{transactions.length}</span>
-                  </p>
-                  <p className="text-white/70">
-                    Total Amount: <span className="text-white">{totalAmount.toFixed(6)} ETH</span>
-                  </p>
-                  <p className="text-white/70">
-                    Estimated Gas: <span className="text-white">{gasEstimate} ETH</span>
-                  </p>
-                </div>
-                <Button
-                  onClick={handleSubmitBatch}
-                  disabled={isSubmitting}
-                  className="bg-gradient-to-r from-l2-primary to-l2-secondary text-white animate-pulse-glow"
-                >
-                  {isSubmitting ? "Submitting..." : "Submit Batch to L2"}
-                </Button>
+        <div className="space-y-6">
+          {isAdmin ? (
+            <>
+              <div className="space-y-4">
+                <h3 className="text-lg font-medium text-white">Pending Transactions</h3>
+                {pendingTransactions.length > 0 ? (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>From</TableHead>
+                        <TableHead>To</TableHead>
+                        <TableHead>Amount (ETH)</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {pendingTransactions.map((tx) => (
+                        <TableRow key={tx.id}>
+                          <TableCell className="text-white/70">{tx.sender.slice(0, 6)}...{tx.sender.slice(-4)}</TableCell>
+                          <TableCell className="text-white/70">{tx.recipient.slice(0, 6)}...{tx.recipient.slice(-4)}</TableCell>
+                          <TableCell className="text-white/70">{tx.amount}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                ) : (
+                  <div className="text-center py-4 text-white/70">No pending transactions</div>
+                )}
               </div>
+              <Button
+                onClick={handleSubmitBatch}
+                disabled={isLoading || pendingTransactions.length === 0}
+                className="w-full bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white transition-all duration-200"
+              >
+                {isLoading ? "Submitting Batch..." : "Submit Batch"}
+              </Button>
+            </>
+          ) : (
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <label className="text-sm text-white/70">Recipient Address</label>
+                <Input
+                  placeholder="0x..."
+                  value={recipient}
+                  onChange={(e) => setRecipient(e.target.value)}
+                  className="bg-white/5 border-white/10 text-white"
+                  disabled={isLoading}
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm text-white/70">Amount (ETH)</label>
+                <Input
+                  type="number"
+                  placeholder="0.01"
+                  value={amount}
+                  onChange={(e) => setAmount(e.target.value)}
+                  min="0"
+                  step="0.0001"
+                  className="bg-white/5 border-white/10 text-white"
+                  disabled={isLoading}
+                />
+              </div>
+              <Button
+                onClick={handleSubmit}
+                disabled={isLoading || !recipient || !amount}
+                className="w-full bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white transition-all duration-200"
+              >
+                {isLoading ? "Submitting..." : "Submit Transaction"}
+              </Button>
             </div>
           )}
         </div>
       </CardContent>
     </Card>
   );
-};
+}
 
 export default BatchSubmission;

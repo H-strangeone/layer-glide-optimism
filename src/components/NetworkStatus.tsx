@@ -1,107 +1,72 @@
-import React, { useEffect, useState } from 'react';
-import { getGasPrice, getBatches, getProvider } from '@/lib/ethers';
-import { formatUnits } from 'ethers';
+import { useEffect, useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Progress } from "@/components/ui/progress";
+import { useWallet } from "@/hooks/useWallet";
+import { getGasPrice, getNetworkName } from "@/lib/ethers";
+import { formatEther } from "ethers";
 
-export function NetworkStatus() {
-  const [networkInfo, setNetworkInfo] = useState({
-    gasPrice: "0",
-    blockHeight: 0,
-    batchCount: 0,
-    pendingTxs: 0,
-    networkName: "Unknown",
-  });
-  const [loading, setLoading] = useState(true);
-
-  const getNetworkName = async (chainId: string) => {
-    const chainIdNum = parseInt(chainId, 16);
-    switch (chainIdNum) {
-      case 31337:
-        return "Hardhat";
-      case 11155111:
-        return "Sepolia";
-      default:
-        return `Chain ${chainIdNum}`;
-    }
-  };
-
-  const fetchData = async () => {
-    try {
-      setLoading(true);
-      const provider = await getProvider();
-
-      // Get network info
-      const chainId = await provider.send('eth_chainId', []);
-      const networkName = await getNetworkName(chainId);
-
-      // Get gas price (returns hex string)
-      const gasPriceHex = await getGasPrice();
-      // Convert hex gas price to gwei
-      const gasPriceGwei = formatUnits(gasPriceHex, 'gwei');
-
-      // Get latest block
-      const blockNumber = await provider.getBlockNumber();
-
-      // Get batch count
-      const batches = await getBatches();
-
-      // Get pending transactions (simplified)
-      const block = await provider.getBlock('latest');
-      const pendingTxs = block?.transactions?.length || 0;
-
-      setNetworkInfo({
-        gasPrice: gasPriceGwei,
-        blockHeight: blockNumber,
-        batchCount: batches.length,
-        pendingTxs,
-        networkName,
-      });
-    } catch (error) {
-      console.error("Error fetching network status:", error);
-    } finally {
-      setLoading(false);
-    }
-  };
+export default function NetworkStatus() {
+  const { address, isConnected } = useWallet();
+  const [gasPrice, setGasPrice] = useState<string>("0");
+  const [blockNumber, setBlockNumber] = useState<number>(0);
+  const [networkName, setNetworkName] = useState<string>("");
 
   useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 5000); // Update every 5 seconds
+    const updateNetworkInfo = async () => {
+      if (!window.ethereum) return;
+
+      try {
+        // Get network name
+        const chainId = await window.ethereum.request({ method: "eth_chainId" });
+        const name = getNetworkName(chainId);
+        setNetworkName(name);
+
+        // Get gas price
+        const price = await getGasPrice();
+        setGasPrice(formatEther(price));
+
+        // Get latest block number
+        const provider = await window.ethereum.request({
+          method: "eth_blockNumber",
+        });
+        setBlockNumber(Number(provider));
+      } catch (error) {
+        console.error("Error updating network info:", error);
+      }
+    };
+
+    updateNetworkInfo();
+    const interval = setInterval(updateNetworkInfo, 10000); // Update every 10 seconds
+
     return () => clearInterval(interval);
   }, []);
 
+  if (!isConnected) return null;
+
   return (
-    <Card className="w-full">
+    <Card className="w-full max-w-md mx-auto mb-6 glass-card">
       <CardHeader>
-        <CardTitle>Network Status</CardTitle>
+        <CardTitle className="text-xl font-bold bg-gradient-to-r from-l2-primary to-l2-secondary bg-clip-text text-transparent">
+          Network Status
+        </CardTitle>
+        <CardDescription className="text-white/80">
+          Current network information
+        </CardDescription>
       </CardHeader>
       <CardContent>
-        {loading ? (
-          <p>Loading network status...</p>
-        ) : (
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-            <div>
-              <p className="text-sm font-medium">Network</p>
-              <p className="text-2xl font-bold">{networkInfo.networkName}</p>
-            </div>
-            <div>
-              <p className="text-sm font-medium">Gas Price</p>
-              <p className="text-2xl font-bold">{parseFloat(networkInfo.gasPrice).toFixed(2)} Gwei</p>
-            </div>
-            <div>
-              <p className="text-sm font-medium">Block Height</p>
-              <p className="text-2xl font-bold">{networkInfo.blockHeight}</p>
-            </div>
-            <div>
-              <p className="text-sm font-medium">Batch Count</p>
-              <p className="text-2xl font-bold">{networkInfo.batchCount}</p>
-            </div>
-            <div>
-              <p className="text-sm font-medium">Pending Transactions</p>
-              <p className="text-2xl font-bold">{networkInfo.pendingTxs}</p>
-            </div>
+        <div className="space-y-4">
+          <div className="flex justify-between items-center">
+            <span className="text-white/80">Network:</span>
+            <span className="font-medium text-white">{networkName}</span>
           </div>
-        )}
+          <div className="flex justify-between items-center">
+            <span className="text-white/80">Gas Price:</span>
+            <span className="font-medium text-white">{gasPrice} ETH</span>
+          </div>
+          <div className="flex justify-between items-center">
+            <span className="text-white/80">Block Number:</span>
+            <span className="font-medium text-white">{blockNumber}</span>
+          </div>
+        </div>
       </CardContent>
     </Card>
   );
