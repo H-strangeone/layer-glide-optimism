@@ -58,7 +58,7 @@ export default function Transactions() {
           )}
         </CardContent>
       </Card>
-      <TransactionTracker address={searchAddress} />
+      <TransactionTracker mode="network" address={searchAddress} />
     </div>
   );
 }

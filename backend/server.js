@@ -22,10 +22,34 @@ let nextTxId = 1;
 
 // Contract configuration
 const CONTRACT_ABI = [
-  "function submitBatch(bytes32[] memory _transactionsRoots) external",
-  "function batches(uint256) external view returns (uint256 batchId, bytes32 transactionsRoot, uint256 timestamp, bool verified, bool finalized)",
-  "function nextBatchId() external view returns (uint256)",
-  "function balances(address) external view returns (uint256)",
+  "function depositFunds() payable",
+  "function withdrawFunds(uint256 _amount)",
+  "function executeL2Transaction(address _recipient, uint256 _amount)",
+  "function executeL2BatchTransaction(address[] _recipients, uint256[] _amounts)",
+  "function submitBatch(bytes32[] _transactionsRoots)",
+  "function verifyBatch(uint256 _batchId)",
+  "function finalizeBatch(uint256 _batchId)",
+  "function reportFraud(uint256 _batchId, bytes32 _fraudProof, tuple(address sender, address recipient, uint256 amount) _tx, bytes32[] _merkleProof)",
+  "function balances(address) view returns (uint256)",
+  "function admin() view returns (address)",
+  "function isOperator(address) view returns (bool)",
+  "function changeAdmin(address newAdmin)",
+  "function addOperator(address operator)",
+  "function removeOperator(address operator)",
+  "function nextBatchId() view returns (uint256)",
+  "function slashingPenalty() view returns (uint256)",
+  "function batches(uint256) view returns (uint256 batchId, bytes32 transactionsRoot, uint256 timestamp, bool verified, bool finalized)",
+  "event TransactionExecuted(address indexed from, address indexed to, uint256 value, uint256 timestamp, uint256 indexed batchId)",
+  "event BatchSubmitted(uint256 indexed batchId, bytes32 transactionsRoot)",
+  "event BatchVerified(uint256 indexed batchId)",
+  "event BatchFinalized(uint256 indexed batchId)",
+  "event FraudReported(uint256 indexed batchId, bytes32 fraudProof)",
+  "event AdminChanged(address indexed previousAdmin, address indexed newAdmin)",
+  "event OperatorAdded(address indexed operator)",
+  "event OperatorRemoved(address indexed operator)",
+  "event FundsDeposited(address indexed user, uint256 amount)",
+  "event FundsWithdrawn(address indexed user, uint256 amount)",
+  "event FraudPenaltyApplied(address indexed user, uint256 penalty)"
 ];
 
 // Get contract address from .env
@@ -116,27 +140,77 @@ initializeBlockchain().catch(err => {
 // Admin authentication middleware
 const adminAuth = async (req, res, next) => {
   try {
-    const adminAddress = req.headers['x-admin-address'];
-
-    if (!adminAddress) {
-      return res.status(401).json({ error: 'Admin address is required' });
+    const userAddress = req.headers['x-admin-address'];
+    if (!userAddress) {
+      return res.status(401).json({ success: false, message: 'Admin authentication required' });
     }
 
-    const expectedAdminAddress = process.env.ADMIN_ADDRESS;
+    console.log('Authenticating admin request from:', userAddress);
 
-    if (!expectedAdminAddress) {
-      console.error('ADMIN_ADDRESS environment variable is not set');
-      return res.status(500).json({ error: 'Admin configuration error' });
+    // Check admin status from the contract
+    try {
+      let adminAddress;
+      let isOperator = false;
+
+      if (contract) {
+        // Try admin() first
+        try {
+          console.log('Calling admin() function...');
+          adminAddress = await contract.admin();
+          console.log('Admin address from contract:', adminAddress);
+        } catch (adminError) {
+          console.log('admin() function failed, trying owner()');
+          try {
+            // Fallback to owner() if admin() fails
+            console.log('Calling owner() function...');
+            adminAddress = await contract.owner();
+            console.log('Owner address from contract:', adminAddress);
+          } catch (ownerError) {
+            console.error('Both admin() and owner() failed:', ownerError);
+            // If both fail, use hardcoded admin address for development
+            adminAddress = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
+            console.log('Using hardcoded admin address:', adminAddress);
+          }
+        }
+
+        // Try to check operator status
+        try {
+          console.log('Checking operator status...');
+          isOperator = await contract.isOperator(userAddress);
+          console.log('Is operator:', isOperator);
+        } catch (operatorError) {
+          console.log('isOperator check failed:', operatorError);
+          // Continue without operator status
+        }
+      } else {
+        // If contract is not initialized, use hardcoded admin address
+        adminAddress = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
+        console.log('Contract not initialized, using hardcoded admin address:', adminAddress);
+      }
+
+      const isAdmin = userAddress.toLowerCase() === adminAddress.toLowerCase() || isOperator;
+      console.log('Final admin status:', isAdmin);
+
+      if (!isAdmin) {
+        return res.status(403).json({ success: false, message: 'Unauthorized: Admin privileges required' });
+      }
+
+      next();
+    } catch (error) {
+      console.error('Error checking admin status:', error);
+      // For development, allow hardcoded admin address as fallback
+      const hardcodedAdmin = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
+      const isAdmin = userAddress.toLowerCase() === hardcodedAdmin.toLowerCase();
+
+      if (!isAdmin) {
+        return res.status(403).json({ success: false, message: 'Unauthorized: Admin privileges required' });
+      }
+
+      next();
     }
-
-    if (adminAddress.toLowerCase() !== expectedAdminAddress.toLowerCase()) {
-      return res.status(403).json({ error: 'Unauthorized: Admin privileges required' });
-    }
-
-    next();
-  } catch (err) {
-    console.error('Error in admin authentication:', err);
-    return res.status(500).json({ error: 'Authentication error' });
+  } catch (error) {
+    console.error('Admin authentication error:', error);
+    res.status(500).json({ success: false, message: 'Authentication error' });
   }
 };
 
@@ -145,45 +219,8 @@ const adminAuth = async (req, res, next) => {
 // Get all batches
 app.get('/api/batches', async (req, res) => {
   try {
-    // Fetch batches from the blockchain
-    if (isConnected && contract) {
-      const nextBatchIdFromContract = await contract.nextBatchId();
-      const fetchedBatches = [];
-
-      for (let i = 1; i < Number(nextBatchIdFromContract); i++) {
-        const batch = await contract.batches(i);
-        fetchedBatches.push({
-          batchId: batch.batchId.toString(),
-          transactionsRoot: batch.transactionsRoot,
-          timestamp: new Date(Number(batch.timestamp) * 1000).toISOString(),
-          verified: batch.verified,
-          finalized: batch.finalized,
-        });
-      }
-
-      // Store blockchain batches in database
-      for (const batch of fetchedBatches) {
-        await prisma.batch.upsert({
-          where: { batchId: batch.batchId },
-          update: {
-            transactionsRoot: batch.transactionsRoot,
-            timestamp: new Date(batch.timestamp),
-            verified: batch.verified,
-            finalized: batch.finalized
-          },
-          create: {
-            batchId: batch.batchId,
-            transactionsRoot: batch.transactionsRoot,
-            timestamp: new Date(batch.timestamp),
-            verified: batch.verified,
-            finalized: batch.finalized
-          }
-        });
-      }
-    }
-
-    // Fetch all batches from database
-    const dbBatches = await prisma.batch.findMany({
+    // Get batches from database with their transactions
+    const batches = await prisma.batch.findMany({
       include: {
         transactions: true
       },
@@ -192,7 +229,7 @@ app.get('/api/batches', async (req, res) => {
       }
     });
 
-    res.json(dbBatches);
+    res.json(batches);
   } catch (error) {
     console.error('Error fetching batches:', error);
     res.status(500).json({ error: 'Failed to fetch batches' });
@@ -684,9 +721,8 @@ app.post('/api/balance/update', async (req, res) => {
 app.post('/api/batches/verify', adminAuth, async (req, res) => {
   try {
     const { batchId } = req.body;
-
     if (!batchId) {
-      return res.status(400).json({ error: 'Batch ID is required' });
+      return res.status(400).json({ success: false, message: 'Batch ID is required' });
     }
 
     // Find the batch in the database
@@ -734,10 +770,10 @@ app.post('/api/batches/verify', adminAuth, async (req, res) => {
       });
     }
 
-    return res.json({ success: true });
+    return res.json({ success: true, message: 'Batch verified successfully' });
   } catch (err) {
     console.error('Error verifying batch:', err);
-    return res.status(500).json({ error: 'Failed to verify batch' });
+    res.status(500).json({ success: false, message: 'Failed to verify batch' });
   }
 });
 
@@ -745,9 +781,8 @@ app.post('/api/batches/verify', adminAuth, async (req, res) => {
 app.post('/api/batches/reject', adminAuth, async (req, res) => {
   try {
     const { batchId, reason } = req.body;
-
     if (!batchId) {
-      return res.status(400).json({ error: 'Batch ID is required' });
+      return res.status(400).json({ success: false, message: 'Batch ID is required' });
     }
 
     // Find the batch in the database
@@ -775,10 +810,10 @@ app.post('/api/batches/reject', adminAuth, async (req, res) => {
       data: { status: 'rejected' }
     });
 
-    return res.json({ success: true });
+    return res.json({ success: true, message: 'Batch rejected successfully' });
   } catch (err) {
     console.error('Error rejecting batch:', err);
-    return res.status(500).json({ error: 'Failed to reject batch' });
+    res.status(500).json({ success: false, message: 'Failed to reject batch' });
   }
 });
 
@@ -865,9 +900,43 @@ app.get('/api/transactions/live', async (req, res) => {
   }
 });
 
-// Get transaction history for an address
-app.get('/api/transactions', async (req, res) => {
-  const { address } = req.query;
+// Get all network transactions
+app.get('/api/transactions/network', async (req, res) => {
+  try {
+    // Get all transactions from the database, ordered by timestamp
+    const transactions = await prisma.batchTransaction.findMany({
+      orderBy: {
+        timestamp: 'desc'
+      },
+      include: {
+        batch: true // Include the associated batch information
+      },
+      take: 50 // Limit to 50 most recent transactions
+    });
+
+    // Format transactions for the frontend
+    const formattedTransactions = transactions.map(tx => ({
+      hash: tx.id,
+      from: tx.from,
+      to: tx.to,
+      value: tx.value,
+      status: tx.batch?.verified ? 'verified' : tx.batch?.finalized ? 'finalized' : 'pending',
+      timestamp: Math.floor(new Date(tx.timestamp).getTime() / 1000),
+      batchId: tx.batch?.batchId || null,
+      type: tx.type || 'transfer',
+      isInBatch: !!tx.batch
+    }));
+
+    res.json(formattedTransactions);
+  } catch (error) {
+    console.error('Error fetching network transactions:', error);
+    res.status(500).json({ error: 'Failed to fetch network transactions' });
+  }
+});
+
+// Get user transaction history
+app.get('/api/transactions/user/:address', async (req, res) => {
+  const { address } = req.params;
 
   if (!address) {
     return res.status(400).json({ error: 'Address is required' });
@@ -875,12 +944,15 @@ app.get('/api/transactions', async (req, res) => {
 
   try {
     // Get transactions where the address is either the sender or receiver
-    const transactions = await prisma.transaction.findMany({
+    const transactions = await prisma.batchTransaction.findMany({
       where: {
         OR: [
           { from: address.toLowerCase() },
           { to: address.toLowerCase() }
         ]
+      },
+      include: {
+        batch: true
       },
       orderBy: {
         timestamp: 'desc'
@@ -890,19 +962,21 @@ app.get('/api/transactions', async (req, res) => {
 
     // Format transactions for the frontend
     const formattedTransactions = transactions.map(tx => ({
-      hash: tx.hash,
+      hash: tx.id,
       from: tx.from,
       to: tx.to,
       value: tx.value,
-      status: tx.status,
-      timestamp: tx.timestamp,
-      batchId: tx.batchId
+      status: tx.batch?.verified ? 'verified' : tx.batch?.finalized ? 'finalized' : 'pending',
+      timestamp: Math.floor(new Date(tx.timestamp).getTime() / 1000),
+      batchId: tx.batch?.batchId || null,
+      type: tx.type || 'transfer',
+      isInBatch: !!tx.batch
     }));
 
     res.json(formattedTransactions);
   } catch (error) {
-    console.error('Error fetching transaction history:', error);
-    res.status(500).json({ error: 'Failed to fetch transaction history' });
+    console.error('Error fetching user transaction history:', error);
+    res.status(500).json({ error: 'Failed to fetch user transaction history' });
   }
 });
 
@@ -910,27 +984,117 @@ app.get('/api/transactions', async (req, res) => {
 app.get('/api/admin/check', async (req, res) => {
   try {
     const { address } = req.query;
-
     if (!address) {
-      return res.status(400).json({ error: 'Address is required' });
+      return res.status(400).json({ success: false, message: 'Address is required' });
     }
 
-    const adminAddress = process.env.ADMIN_ADDRESS;
-
-    if (!adminAddress) {
-      console.error('ADMIN_ADDRESS environment variable is not set');
-      return res.status(500).json({ error: 'Admin configuration error' });
+    // Check if contract is initialized
+    if (!contract) {
+      console.error('Contract not initialized');
+      return res.status(500).json({ success: false, message: 'Contract not initialized' });
     }
 
-    const isAdmin = address.toLowerCase() === adminAddress.toLowerCase();
+    console.log('Checking admin status for address:', address);
 
-    return res.json({
-      isAdmin,
-      adminAddress: isAdmin ? adminAddress : null
-    });
-  } catch (err) {
-    console.error('Error checking admin status:', err);
-    return res.status(500).json({ error: 'Failed to check admin status' });
+    try {
+      let adminAddress;
+      let isOperator = false;
+
+      // Try admin() first
+      try {
+        console.log('Calling admin() function...');
+        adminAddress = await contract.admin();
+        console.log('Admin address from contract:', adminAddress);
+      } catch (adminError) {
+        console.log('admin() function failed, trying owner()');
+        try {
+          // Fallback to owner() if admin() fails
+          console.log('Calling owner() function...');
+          adminAddress = await contract.owner();
+          console.log('Owner address from contract:', adminAddress);
+        } catch (ownerError) {
+          console.error('Both admin() and owner() failed:', ownerError);
+          // If both fail, check against hardcoded admin address for development
+          const hardcodedAdmin = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
+          console.log('Using hardcoded admin address:', hardcodedAdmin);
+          adminAddress = hardcodedAdmin;
+        }
+      }
+
+      // Try to check operator status
+      try {
+        console.log('Checking operator status...');
+        isOperator = await contract.isOperator(address);
+        console.log('Is operator:', isOperator);
+      } catch (operatorError) {
+        console.log('isOperator check failed:', operatorError);
+        // Continue without operator status
+      }
+
+      const isAdmin = address.toLowerCase() === adminAddress.toLowerCase() || isOperator;
+      console.log('Final admin status:', isAdmin);
+
+      res.json({
+        success: true,
+        isAdmin,
+        adminAddress: isAdmin ? adminAddress : null
+      });
+    } catch (error) {
+      console.error('Error checking admin status from contract:', error);
+      // For development, allow hardcoded admin address
+      const hardcodedAdmin = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
+      const isAdmin = address.toLowerCase() === hardcodedAdmin.toLowerCase();
+      res.json({
+        success: true,
+        isAdmin,
+        adminAddress: isAdmin ? hardcodedAdmin : null
+      });
+    }
+  } catch (error) {
+    console.error('Error in admin check:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+});
+
+// Get operators
+app.get('/api/operators', async (req, res) => {
+  try {
+    let operators = [];
+
+    // Try to get operators from database
+    try {
+      operators = await prisma.operator.findMany({
+        orderBy: {
+          createdAt: 'desc'
+        }
+      });
+    } catch (dbError) {
+      console.warn('Database error:', dbError);
+      // Fallback to hardcoded operators for development
+      operators = [
+        { address: '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266', isActive: true },
+        { address: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8', isActive: true },
+        { address: '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC', isActive: true }
+      ];
+    }
+
+    // Try to verify operator status on-chain
+    if (contract) {
+      operators = await Promise.all(operators.map(async (operator) => {
+        try {
+          const isActive = await contract.isOperator(operator.address);
+          return { ...operator, isActive };
+        } catch (err) {
+          console.warn(`Failed to verify operator status for ${operator.address}:`, err);
+          return operator;
+        }
+      }));
+    }
+
+    res.json(operators);
+  } catch (error) {
+    console.error('Error in /api/operators:', error);
+    res.status(500).json({ error: 'Failed to fetch operators' });
   }
 });
 

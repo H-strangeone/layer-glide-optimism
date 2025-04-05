@@ -119,9 +119,53 @@ const getProvider = async () => {
 
 // Get contract instance
 export const getContract = async () => {
-  const provider = await getProvider();
-  const signer = await provider.getSigner();
-  return new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
+  try {
+    const provider = await getProvider();
+
+    // First verify that we're connected to the correct network
+    const network = await provider.getNetwork();
+    console.log('Connected to network:', network.name, 'chainId:', network.chainId);
+
+    // Get the signer
+    const signer = await provider.getSigner();
+    console.log('Signer address:', await signer.getAddress());
+
+    // Verify that the contract exists at the specified address
+    const code = await provider.getCode(CONTRACT_ADDRESS);
+    if (code === '0x') {
+      console.error('No contract deployed at address:', CONTRACT_ADDRESS);
+      throw new Error(`No contract deployed at ${CONTRACT_ADDRESS}`);
+    }
+
+    // Create contract instance
+    const contract = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
+
+    // Test if the contract is accessible and has the correct interface
+    try {
+      // Try to call a view function that should always work
+      const adminAddress = await contract.admin();
+      console.log('Contract initialized successfully, admin:', adminAddress);
+      return contract;
+    } catch (error: any) {
+      console.error('Contract interface error:', error);
+      if (error.message.includes('call revert exception')) {
+        throw new Error('Contract call reverted. Please check if you are connected to the correct network.');
+      } else if (error.message.includes('BAD_DATA')) {
+        throw new Error('Contract interface mismatch. The ABI might not match the deployed contract.');
+      }
+      throw error;
+    }
+  } catch (error: any) {
+    console.error('Error initializing contract:', error);
+    if (error.message.includes('MetaMask is not installed')) {
+      throw new Error('Please install MetaMask to interact with the blockchain.');
+    } else if (error.message.includes('user rejected')) {
+      throw new Error('Please connect your wallet to continue.');
+    } else if (error.message.includes('network')) {
+      throw new Error('Please connect to the correct network (Hardhat or Sepolia).');
+    }
+    throw new Error('Failed to initialize contract. Please check your wallet connection and network.');
+  }
 };
 
 // Get transaction history for an address
@@ -444,31 +488,30 @@ export const getLayer1Balance = async (address: string): Promise<string> => {
 // Get Layer 2 balance
 export const getLayer2Balance = async (address: string): Promise<string> => {
   try {
-    // First try to get balance from the blockchain
+    // Try to get from the API first
     try {
-      const contract = await getContract();
-      const balance = await contract.balances(address);
-      return formatEther(balance);
-    } catch (error) {
-      console.error("Error getting Layer 2 balance from blockchain:", error);
+      const response = await fetch(`http://localhost:5500/api/balance/${address}`);
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
+      }
+      const data = await response.json();
+      return data.layer2Balance || "0";
+    } catch (apiError) {
+      console.error("Error getting Layer 2 balance from API:", apiError);
 
-      // If blockchain fails, try to get from the API
+      // If API fails, try to get from the blockchain
       try {
-        const response = await fetch(`http://localhost:5500/api/balance/${address}`);
-        if (!response.ok) {
-          throw new Error(`API error: ${response.status}`);
-        }
-
-        const data = await response.json();
-        return data.layer2Balance || "0";
-      } catch (apiError) {
-        console.error("Error getting Layer 2 balance from API:", apiError);
-        return "0";
+        const contract = await getContract();
+        const balance = await contract.balances(address);
+        return formatEther(balance);
+      } catch (blockchainError) {
+        console.error("Error getting Layer 2 balance from blockchain:", blockchainError);
+        return "0"; // Return 0 as a fallback
       }
     }
   } catch (error) {
-    console.error("Error fetching Layer 2 balance:", error);
-    return "0";
+    console.error("Error in getLayer2Balance:", error);
+    return "0"; // Return 0 as a fallback
   }
 };
 
@@ -494,28 +537,29 @@ export function formatLargeNumber(value: string): string {
 export const getBatches = async (): Promise<Batch[]> => {
   try {
     const contract = await getContract();
-    const nextBatchId = await contract.nextBatchId();
-    const batches: Batch[] = [];
+    const nextBatchIdBN = await contract.nextBatchId();
+    const nextBatchId = Number(nextBatchIdBN);
 
-    // Fetch all batches from 0 to nextBatchId-1
-    // Convert nextBatchId to number if it's a BigNumber, otherwise use it directly
-    const batchCount = typeof nextBatchId === 'bigint' ? Number(nextBatchId) : nextBatchId;
-
-    for (let i = 0; i < batchCount; i++) {
-      const batch = await contract.batches(i);
-      batches.push({
-        id: i.toString(),
-        transactionsRoot: batch.transactionsRoot,
-        timestamp: batch.timestamp.toString(),
-        verified: batch.verified,
-        finalized: batch.finalized
-      });
+    const batchPromises = [];
+    for (let i = Math.max(0, nextBatchId - 10); i < nextBatchId; i++) {
+      batchPromises.push(
+        contract.batches(i)
+          .then(batch => ({
+            id: batch.batchId.toString(),
+            transactionsRoot: batch.transactionsRoot,
+            timestamp: batch.timestamp.toString(),
+            verified: batch.verified,
+            finalized: batch.finalized
+          }))
+          .catch(() => null)
+      );
     }
 
-    return batches;
+    const batches = await Promise.all(batchPromises);
+    return batches.filter(batch => batch !== null);
   } catch (error) {
     console.error("Error fetching batches:", error);
-    throw error;
+    return [];
   }
 };
 
@@ -783,11 +827,29 @@ const updateLayer2Balance = async (userAddress: string, contractAddress: string,
 export const isAdmin = async (address: string): Promise<boolean> => {
   try {
     const contract = await getContract();
-    const adminAddress = await contract.admin();
-    const isOperator = await contract.isOperator(address);
-    return address.toLowerCase() === adminAddress.toLowerCase() || isOperator;
+
+    // Only check admin() function
+    try {
+      const adminAddress = await contract.admin();
+      return adminAddress.toLowerCase() === address.toLowerCase();
+    } catch (error) {
+      console.warn("admin() check failed:", error);
+
+      // For development, allow hardcoded admin address
+      if (process.env.NODE_ENV === 'development') {
+        const hardcodedAdmin = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
+        return address.toLowerCase() === hardcodedAdmin.toLowerCase();
+      }
+      return false;
+    }
   } catch (error) {
     console.error("Error checking admin status:", error);
+
+    // For development, allow hardcoded admin address
+    if (process.env.NODE_ENV === 'development') {
+      const hardcodedAdmin = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
+      return address.toLowerCase() === hardcodedAdmin.toLowerCase();
+    }
     return false;
   }
 };

@@ -10,23 +10,30 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model Operator {
+  id        String   @id @default(uuid())
+  address   String   @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
 model ContractDeployment {
   id        String   @id @default(uuid())
   address   String   @unique
   network   String
-  deployedAt DateTime @default(now())
   isActive  Boolean  @default(true)
-  balances  Layer2Balance[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model Layer2Balance {
   id              String   @id @default(uuid())
   userAddress     String
-  balance         String   @default("0")
   contractAddress String
-  contract        ContractDeployment @relation(fields: [contractAddress], references: [address])
-  updatedAt       DateTime @updatedAt
+  balance         String
   createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   @@unique([userAddress, contractAddress])
 }
@@ -49,10 +56,10 @@ model Balance {
 }
 
 model Batch {
-  id              String   @id @default(cuid())
-  batchId         String   @unique // The ID from the smart contract
+  id              String   @id @default(uuid())
+  batchId         String   @unique
   transactionsRoot String
-  timestamp       DateTime
+  timestamp       DateTime @default(now())
   verified        Boolean  @default(false)
   finalized       Boolean  @default(false)
   transactions    BatchTransaction[]
@@ -61,14 +68,14 @@ model Batch {
 }
 
 model BatchTransaction {
-  id          String   @id @default(cuid())
-  batchId     String
-  from        String
-  to          String
-  value       String
-  status      String
-  timestamp   DateTime
-  batch       Batch    @relation(fields: [batchId], references: [id])
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id        String   @id @default(uuid())
+  from      String
+  to        String
+  value     String
+  status    String   @default("pending")
+  timestamp DateTime @default(now())
+  batchId   String
+  batch     Batch    @relation(fields: [batchId], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 } 

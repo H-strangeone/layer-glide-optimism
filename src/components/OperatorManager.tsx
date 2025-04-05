@@ -3,51 +3,86 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/components/ui/use-toast";
-import { addOperator, removeOperator, isOperator, getContract } from "@/lib/ethers";
+import { addOperator, removeOperator, isOperator, getContract, isAdmin } from "@/lib/ethers";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { useWallet } from "@/hooks/useWallet";
 
-export function OperatorManager() {
+interface Operator {
+    address: string;
+    isActive: boolean;
+}
+
+export default function OperatorManager() {
+    const [operators, setOperators] = useState<Operator[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
     const [operatorAddress, setOperatorAddress] = useState("");
     const [isLoading, setIsLoading] = useState(false);
-    const [operators, setOperators] = useState<string[]>([]);
+    const [isUserAdmin, setIsUserAdmin] = useState(false);
     const { toast } = useToast();
+    const { address } = useWallet();
 
     useEffect(() => {
-        fetchOperators();
-    }, []);
+        const checkAdminStatus = async () => {
+            if (address) {
+                const adminStatus = await isAdmin(address);
+                setIsUserAdmin(adminStatus);
+            }
+        };
+        checkAdminStatus();
+    }, [address]);
 
     const fetchOperators = async () => {
         try {
-            const contract = await getContract();
-            // Get the admin address
-            const adminAddress = await contract.admin();
+            setLoading(true);
+            setError(null);
 
-            // For demo purposes, we'll check a few known addresses
-            // In a production environment, you'd want to track operator events
-            const testAddresses = [
-                adminAddress,
-                "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
-                "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
-            ];
+            const response = await fetch('http://localhost:5500/api/operators');
+            if (!response.ok) {
+                throw new Error('Failed to fetch operators from database');
+            }
+            const dbOperators = await response.json();
 
-            const operatorStatuses = await Promise.all(
-                testAddresses.map(async (address) => {
-                    const isOp = await contract.isOperator(address);
-                    return { address, isOperator: isOp };
-                })
-            );
+            try {
+                const contract = await getContract();
+                const enrichedOperators = await Promise.all(dbOperators.map(async (operator: Operator) => {
+                    try {
+                        const isOperator = await contract.isOperator(operator.address);
+                        return {
+                            ...operator,
+                            isActive: isOperator
+                        };
+                    } catch (err) {
+                        console.warn(`Failed to verify operator status for ${operator.address}:`, err);
+                        return operator;
+                    }
+                }));
 
-            setOperators(operatorStatuses.filter(op => op.isOperator).map(op => op.address));
-        } catch (error) {
-            console.error("Error fetching operators:", error);
+                setOperators(enrichedOperators);
+            } catch (err) {
+                console.warn('Failed to get on-chain data:', err);
+                setOperators(dbOperators);
+            }
+        } catch (err) {
+            console.error('Error fetching operators:', err);
+            setError('Failed to fetch operators');
+            setOperators([]);
             toast({
                 title: "Error",
-                description: "Failed to fetch operators",
+                description: "Failed to fetch operators. Please try again later.",
                 variant: "destructive",
             });
+        } finally {
+            setLoading(false);
         }
     };
+
+    useEffect(() => {
+        fetchOperators();
+        const interval = setInterval(fetchOperators, 30000);
+        return () => clearInterval(interval);
+    }, []);
 
     const handleAddOperator = async () => {
         if (!operatorAddress) {
@@ -67,7 +102,7 @@ export function OperatorManager() {
                 description: "Operator added successfully",
             });
             setOperatorAddress("");
-            fetchOperators(); // Refresh the list
+            fetchOperators();
         } catch (error: any) {
             console.error("Error adding operator:", error);
             toast({
@@ -98,7 +133,7 @@ export function OperatorManager() {
                 description: "Operator removed successfully",
             });
             setOperatorAddress("");
-            fetchOperators(); // Refresh the list
+            fetchOperators();
         } catch (error: any) {
             console.error("Error removing operator:", error);
             toast({
@@ -112,24 +147,28 @@ export function OperatorManager() {
     };
 
     return (
-        <Card>
+        <Card className="glass-card border border-white/10 backdrop-blur-md bg-black/30">
             <CardHeader>
-                <CardTitle>Operator Management</CardTitle>
-                <CardDescription>
-                    Add or remove operators who can submit and verify batches
+                <CardTitle className="text-2xl bg-gradient-to-r from-purple-400 to-pink-500 bg-clip-text text-transparent">
+                    Operator Management
+                </CardTitle>
+                <CardDescription className="text-white/70">
+                    View and manage network operators
                 </CardDescription>
             </CardHeader>
             <CardContent>
-                <div className="space-y-4">
-                    <div className="flex space-x-2">
+                {isUserAdmin && (
+                    <div className="flex gap-4 mb-6">
                         <Input
-                            placeholder="Operator Address"
+                            placeholder="Enter operator address (0x...)"
                             value={operatorAddress}
                             onChange={(e) => setOperatorAddress(e.target.value)}
+                            className="bg-white/5 border-white/10 text-white flex-1"
                         />
                         <Button
                             onClick={handleAddOperator}
                             disabled={isLoading}
+                            className="bg-purple-500 hover:bg-purple-600"
                         >
                             Add Operator
                         </Button>
@@ -141,9 +180,22 @@ export function OperatorManager() {
                             Remove Operator
                         </Button>
                     </div>
-
-                    <div className="mt-4">
-                        <h3 className="text-lg font-semibold mb-2">Current Operators</h3>
+                )}
+                {loading ? (
+                    <div className="text-center py-8">
+                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-500 mx-auto"></div>
+                        <p className="mt-2 text-white/70">Loading operators...</p>
+                    </div>
+                ) : error ? (
+                    <div className="text-center py-8 text-red-400">
+                        {error}
+                    </div>
+                ) : operators.length === 0 ? (
+                    <div className="text-center py-8 text-white/70">
+                        No operators found
+                    </div>
+                ) : (
+                    <div className="overflow-x-auto">
                         <Table>
                             <TableHeader>
                                 <TableRow>
@@ -152,18 +204,24 @@ export function OperatorManager() {
                                 </TableRow>
                             </TableHeader>
                             <TableBody>
-                                {operators.map((address) => (
-                                    <TableRow key={address}>
-                                        <TableCell className="font-mono">{address}</TableCell>
+                                {operators.map((operator) => (
+                                    <TableRow key={operator.address}>
+                                        <TableCell className="font-mono">
+                                            {operator.address.substring(0, 6)}...{operator.address.substring(operator.address.length - 4)}
+                                        </TableCell>
                                         <TableCell>
-                                            <Badge variant="success">Active</Badge>
+                                            {operator.isActive ? (
+                                                <Badge variant="default">Active</Badge>
+                                            ) : (
+                                                <Badge variant="secondary">Inactive</Badge>
+                                            )}
                                         </TableCell>
                                     </TableRow>
                                 ))}
                             </TableBody>
                         </Table>
                     </div>
-                </div>
+                )}
             </CardContent>
         </Card>
     );
