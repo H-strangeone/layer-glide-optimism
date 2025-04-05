@@ -220,7 +220,25 @@ export function TransactionTracker({ mode = 'user', address }: TransactionTracke
                       <TableCell className="font-mono text-xs">
                         {tx.to.substring(0, 6)}...{tx.to.substring(tx.to.length - 4)}
                       </TableCell>
-                      <TableCell>{formatEther(tx.value)} ETH</TableCell>
+                      <TableCell>
+                        {(() => {
+                          try {
+                            // Check if the value is a valid number string
+                            if (tx.value && !isNaN(Number(tx.value))) {
+                              // If it's a decimal string, just display it directly
+                              if (tx.value.includes('.')) {
+                                return `${tx.value} ETH`;
+                              }
+                              // Otherwise use formatEther
+                              return `${formatEther(tx.value)} ETH`;
+                            }
+                            return '0 ETH';
+                          } catch (error) {
+                            console.error('Error formatting value:', error);
+                            return '0 ETH';
+                          }
+                        })()}
+                      </TableCell>
                       <TableCell>{getStatusBadge(tx.status)}</TableCell>
                       <TableCell>{formatTimestamp(tx.timestamp)}</TableCell>
                     </TableRow>
@@ -289,7 +307,25 @@ export function TransactionTracker({ mode = 'user', address }: TransactionTracke
                     <TableCell className="font-mono text-xs">
                       {tx.to.substring(0, 6)}...{tx.to.substring(tx.to.length - 4)}
                     </TableCell>
-                    <TableCell>{formatEther(tx.value)} ETH</TableCell>
+                    <TableCell>
+                      {(() => {
+                        try {
+                          // Check if the value is a valid number string
+                          if (tx.value && !isNaN(Number(tx.value))) {
+                            // If it's a decimal string, just display it directly
+                            if (tx.value.includes('.')) {
+                              return `${tx.value} ETH`;
+                            }
+                            // Otherwise use formatEther
+                            return `${formatEther(tx.value)} ETH`;
+                          }
+                          return '0 ETH';
+                        } catch (error) {
+                          console.error('Error formatting value:', error);
+                          return '0 ETH';
+                        }
+                      })()}
+                    </TableCell>
                     <TableCell>{getStatusBadge(tx.status)}</TableCell>
                     <TableCell>{tx.batchId || '-'}</TableCell>
                     <TableCell>{formatTimestamp(tx.timestamp)}</TableCell>

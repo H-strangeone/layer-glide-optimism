@@ -298,14 +298,149 @@ app.post('/api/batches', async (req, res) => {
         console.log(`Batch submitted to blockchain. Transaction hash: ${receipt.transactionHash}`);
       } catch (error) {
         console.error('Error submitting batch to blockchain:', error);
-        // Don't throw error here, as the batch is still stored in database
       }
     }
 
-    return res.status(201).json(batch);
+    res.json(batch);
   } catch (error) {
-    console.error('Error storing batch in database:', error);
-    return res.status(500).json({ error: 'Failed to store batch in database', details: error.message });
+    console.error('Error storing batch:', error);
+    res.status(500).json({ error: 'Failed to store batch' });
+  }
+});
+
+// Verify a batch
+app.post('/api/batches/verify', adminAuth, async (req, res) => {
+  try {
+    const { batchId } = req.body;
+    if (!batchId) {
+      return res.status(400).json({ error: 'Batch ID is required' });
+    }
+
+    // Find the batch in the database
+    const batch = await prisma.batch.findUnique({
+      where: { id: batchId },
+      include: { transactions: true }
+    });
+
+    if (!batch) {
+      return res.status(404).json({ error: 'Batch not found' });
+    }
+
+    // Get the active contract deployment
+    const activeDeployment = await prisma.contractDeployment.findFirst({
+      where: { isActive: true }
+    });
+
+    if (!activeDeployment) {
+      return res.status(404).json({ error: 'No active contract deployment found' });
+    }
+
+    // Update batch status to verified
+    const updatedBatch = await prisma.batch.update({
+      where: { id: batchId },
+      data: {
+        verified: true,
+        finalized: false
+      },
+      include: { transactions: true }
+    });
+
+    // Update transaction statuses to verified and adjust L2 balances
+    for (const tx of batch.transactions) {
+      // Update transaction status
+      await prisma.batchTransaction.update({
+        where: { id: tx.id },
+        data: { status: 'verified' }
+      });
+
+      // Adjust L2 balances
+      const fromUser = await prisma.user.findUnique({
+        where: { address: tx.fromAddress }
+      });
+
+      const toUser = await prisma.user.findUnique({
+        where: { address: tx.toAddress }
+      });
+
+      if (fromUser) {
+        await prisma.user.update({
+          where: { id: fromUser.id },
+          data: {
+            l2Balance: {
+              decrement: BigInt(tx.value)
+            }
+          }
+        });
+      }
+
+      if (toUser) {
+        await prisma.user.update({
+          where: { id: toUser.id },
+          data: {
+            l2Balance: {
+              increment: BigInt(tx.value)
+            }
+          }
+        });
+      }
+    }
+
+    res.json({
+      message: 'Batch verified successfully',
+      batch: updatedBatch
+    });
+  } catch (error) {
+    console.error('Error verifying batch:', error);
+    res.status(500).json({ error: 'Failed to verify batch' });
+  }
+});
+
+// Reject a batch
+app.post('/api/batches/reject', adminAuth, async (req, res) => {
+  try {
+    const { batchId } = req.body;
+    if (!batchId) {
+      return res.status(400).json({ error: 'Batch ID is required' });
+    }
+
+    // Find the batch in the database
+    const batch = await prisma.batch.findUnique({
+      where: { id: batchId },
+      include: { transactions: true }
+    });
+
+    if (!batch) {
+      return res.status(404).json({ error: 'Batch not found' });
+    }
+
+    // Update batch status to rejected
+    // Use the fields that are available in the schema
+    const updatedBatch = await prisma.batch.update({
+      where: { id: batchId },
+      data: {
+        verified: false,
+        finalized: false
+        // Note: 'rejected' is not a field in the schema
+        // We're using verified: false to indicate rejection
+      },
+      include: { transactions: true }
+    });
+
+    // Update transaction statuses to rejected
+    for (const tx of batch.transactions) {
+      await prisma.batchTransaction.update({
+        where: { id: tx.id },
+        data: { status: 'rejected' }
+      });
+    }
+
+    res.json({
+      message: 'Batch rejected successfully',
+      batch: updatedBatch
+    });
+  } catch (error) {
+    console.error('Error rejecting batch:', error);
+    res.status(500).json({ error: 'Failed to reject batch' });
   }
 });
 
@@ -717,106 +852,6 @@ app.post('/api/balance/update', async (req, res) => {
   }
 });
 
-// Verify batch endpoint
-app.post('/api/batches/verify', adminAuth, async (req, res) => {
-  try {
-    const { batchId } = req.body;
-    if (!batchId) {
-      return res.status(400).json({ success: false, message: 'Batch ID is required' });
-    }
-
-    // Find the batch in the database
-    const batch = await prisma.batch.findUnique({
-      where: { batchId },
-      include: { transactions: true }
-    });
-
-    if (!batch) {
-      return res.status(404).json({ error: 'Batch not found' });
-    }
-
-    // Update batch status
-    await prisma.batch.update({
-      where: { batchId },
-      data: { verified: true }
-    });
-
-    // Update transaction statuses
-    await prisma.transaction.updateMany({
-      where: { batchId },
-      data: { status: 'confirmed' }
-    });
-
-    // Update user balances
-    for (const tx of batch.transactions) {
-      // Deduct from sender
-      await prisma.user.update({
-        where: { address: tx.from },
-        data: {
-          balance: {
-            decrement: tx.value
-          }
-        }
-      });
-
-      // Add to recipient
-      await prisma.user.update({
-        where: { address: tx.to },
-        data: {
-          balance: {
-            increment: tx.value
-          }
-        }
-      });
-    }
-
-    return res.json({ success: true, message: 'Batch verified successfully' });
-  } catch (err) {
-    console.error('Error verifying batch:', err);
-    res.status(500).json({ success: false, message: 'Failed to verify batch' });
-  }
-});
-
-// Reject batch endpoint
-app.post('/api/batches/reject', adminAuth, async (req, res) => {
-  try {
-    const { batchId, reason } = req.body;
-    if (!batchId) {
-      return res.status(400).json({ success: false, message: 'Batch ID is required' });
-    }
-
-    // Find the batch in the database
-    const batch = await prisma.batch.findUnique({
-      where: { batchId },
-      include: { transactions: true }
-    });
-
-    if (!batch) {
-      return res.status(404).json({ error: 'Batch not found' });
-    }
-
-    // Update batch status
-    await prisma.batch.update({
-      where: { batchId },
-      data: {
-        rejected: true,
-        rejectionReason: reason || 'Rejected by admin'
-      }
-    });
-
-    // Update transaction statuses
-    await prisma.transaction.updateMany({
-      where: { batchId },
-      data: { status: 'rejected' }
-    });
-
-    return res.json({ success: true, message: 'Batch rejected successfully' });
-  } catch (err) {
-    console.error('Error rejecting batch:', err);
-    res.status(500).json({ success: false, message: 'Failed to reject batch' });
-  }
-});
-
 // Mock data generators for fallback
 const getMockBatches = () => {
   return [
@@ -1095,6 +1130,98 @@ app.get('/api/operators', async (req, res) => {
   } catch (error) {
     console.error('Error in /api/operators:', error);
     res.status(500).json({ error: 'Failed to fetch operators' });
+  }
+});
+
+// Update Layer 2 balances after batch verification
+app.post('/api/batches/update-balances', adminAuth, async (req, res) => {
+  try {
+    const { batchId } = req.body;
+    if (!batchId) {
+      return res.status(400).json({ success: false, message: 'Batch ID is required' });
+    }
+
+    // Find the batch and its transactions
+    const batch = await prisma.batch.findUnique({
+      where: { batchId },
+      include: { transactions: true }
+    });
+
+    if (!batch) {
+      return res.status(404).json({ error: 'Batch not found' });
+    }
+
+    // Get the active contract deployment
+    const activeDeployment = await prisma.contractDeployment.findFirst({
+      where: { isActive: true }
+    });
+
+    if (!activeDeployment) {
+      return res.status(500).json({ error: 'No active contract deployment found' });
+    }
+
+    // Update balances for each transaction
+    for (const tx of batch.transactions) {
+      // Update sender's balance
+      const senderBalance = await prisma.layer2Balance.findUnique({
+        where: {
+          userAddress_contractAddress: {
+            userAddress: tx.from.toLowerCase(),
+            contractAddress: activeDeployment.address
+          }
+        }
+      });
+
+      if (senderBalance) {
+        const newSenderBalance = (BigInt(senderBalance.balance) - BigInt(tx.value)).toString();
+        await prisma.layer2Balance.update({
+          where: {
+            userAddress_contractAddress: {
+              userAddress: tx.from.toLowerCase(),
+              contractAddress: activeDeployment.address
+            }
+          },
+          data: { balance: newSenderBalance }
+        });
+      }
+
+      // Update recipient's balance
+      const recipientBalance = await prisma.layer2Balance.findUnique({
+        where: {
+          userAddress_contractAddress: {
+            userAddress: tx.to.toLowerCase(),
+            contractAddress: activeDeployment.address
+          }
+        }
+      });
+
+      if (recipientBalance) {
+        const newRecipientBalance = (BigInt(recipientBalance.balance) + BigInt(tx.value)).toString();
+        await prisma.layer2Balance.update({
+          where: {
+            userAddress_contractAddress: {
+              userAddress: tx.to.toLowerCase(),
+              contractAddress: activeDeployment.address
+            }
+          },
+          data: { balance: newRecipientBalance }
+        });
+      } else {
+        // Create new balance record for recipient
+        await prisma.layer2Balance.create({
+          data: {
+            userAddress: tx.to.toLowerCase(),
+            contractAddress: activeDeployment.address,
+            balance: tx.value
+          }
+        });
+      }
+    }
+
+    return res.json({ success: true, message: 'Balances updated successfully' });
+  } catch (error) {
+    console.error('Error updating balances:', error);
+    return res.status(500).json({ error: 'Failed to update balances' });
   }
 });
 

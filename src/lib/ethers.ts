@@ -369,7 +369,9 @@ export const batchTransfer = executeL2BatchTransaction;
 export const submitBatchWithMerkleRoot = async (merkleRoot: string) => {
   try {
     const contract = await getContract();
-    // Convert the merkleRoot to an array since the contract expects bytes32[]
+    // Get the current batch ID
+    const nextBatchId = await contract.nextBatchId();
+    // Submit the batch with the current batch ID
     const tx = await contract.submitBatch([merkleRoot]);
     await tx.wait();
     toast({
@@ -392,10 +394,19 @@ export const submitBatchWithMerkleRoot = async (merkleRoot: string) => {
 export const verifyBatch = async (batchId: string) => {
   try {
     const contract = await getContract();
-    // Convert the string batchId to a numeric hash
-    const numericBatchId = parseInt(ethers.keccak256(ethers.toUtf8Bytes(batchId)).slice(0, 8), 16);
+    if (!contract) {
+      throw new Error("Failed to get contract instance");
+    }
+
+    // Get the numeric batch ID from the contract
+    const nextBatchId = await contract.nextBatchId();
+    // Use the next batch ID - 1 as the current batch ID
+    const numericBatchId = nextBatchId - 1n;
+
+    // Verify the batch on-chain
     const tx = await contract.verifyBatch(numericBatchId);
     await tx.wait();
+
     toast({
       title: "Success",
       description: "Batch verified successfully",
@@ -405,7 +416,7 @@ export const verifyBatch = async (batchId: string) => {
     console.error("Error verifying batch:", error);
     toast({
       title: "Error",
-      description: "Failed to verify batch",
+      description: "Failed to verify batch: " + (error instanceof Error ? error.message : String(error)),
       variant: "destructive",
     });
     throw error;

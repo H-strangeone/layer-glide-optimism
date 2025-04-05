@@ -9,6 +9,7 @@ import { formatDistanceToNow } from "date-fns";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { TableCell } from "@/components/ui/table";
 
 interface Transaction {
     id: string;
@@ -301,7 +302,23 @@ export default function AdminPanel() {
                                                                 To: {tx.to.slice(0, 6)}...{tx.to.slice(-4)}
                                                             </div>
                                                             <div>
-                                                                {formatEther(tx.value)} ETH
+                                                                {(() => {
+                                                                    try {
+                                                                        // Check if the value is a valid number string
+                                                                        if (tx.value && !isNaN(Number(tx.value))) {
+                                                                            // If it's a decimal string, just display it directly
+                                                                            if (tx.value.includes('.')) {
+                                                                                return `${tx.value} ETH`;
+                                                                            }
+                                                                            // Otherwise use formatEther
+                                                                            return `${formatEther(tx.value)} ETH`;
+                                                                        }
+                                                                        return '0 ETH';
+                                                                    } catch (error) {
+                                                                        console.error('Error formatting value:', error);
+                                                                        return '0 ETH';
+                                                                    }
+                                                                })()}
                                                             </div>
                                                             <div>
                                                                 {formatDistanceToNow(new Date(tx.timestamp * 1000), { addSuffix: true })}

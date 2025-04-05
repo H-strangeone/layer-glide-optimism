@@ -7,12 +7,14 @@ import { getBatches, submitBatchWithMerkleRoot, verifyBatch, finalizeBatch, isAd
 import { useWallet } from "@/hooks/useWallet";
 import { createMerkleTreeFromTransactions, Transaction } from "@/lib/merkleTree";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { AlertCircle } from "lucide-react";
+import { AlertCircle, ChevronDown, ChevronRight, CheckCircle, Clock, AlertTriangle } from "lucide-react";
 import { BatchDetails } from './BatchDetails';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { formatEther } from 'ethers';
 import { formatDistanceToNow } from 'date-fns';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 
 interface BatchTransaction {
     from: string;
@@ -37,14 +39,17 @@ interface Batch extends BlockchainBatch {
 
 interface AdminBatchManagerProps {
     isAdmin: boolean;
+    isOperator?: boolean;
 }
 
-export default function AdminBatchManager({ isAdmin }: AdminBatchManagerProps) {
+export default function AdminBatchManager({ isAdmin, isOperator = false }: AdminBatchManagerProps) {
     const { address, isConnected } = useWallet();
     const [batches, setBatches] = useState<Batch[]>([]);
     const [selectedBatch, setSelectedBatch] = useState<Batch | null>(null);
     const [merkleRoot, setMerkleRoot] = useState<string>("");
     const [isLoading, setIsLoading] = useState(false);
+    const [expandedBatchId, setExpandedBatchId] = useState<string | null>(null);
+    const [activeTab, setActiveTab] = useState<string>("all");
     const { toast } = useToast();
     const [error, setError] = useState('');
 
@@ -63,11 +68,24 @@ export default function AdminBatchManager({ isAdmin }: AdminBatchManagerProps) {
             // Then try to get on-chain data to enrich the batches
             try {
                 const contract = await getContract();
+                if (!contract) {
+                    throw new Error('Failed to get contract instance');
+                }
+
+                // Get the next batch ID from the contract
+                const nextBatchId = await contract.nextBatchId();
+                // Calculate the current batch ID (nextBatchId - 1)
+                const currentBatchId = nextBatchId - 1n;
+
                 const enrichedBatches = await Promise.all(dbBatches.map(async (batch: Batch) => {
                     try {
-                        // Get on-chain verification status
-                        const isVerified = await contract.isBatchVerified(batch.batchId);
-                        const isFinalized = await contract.isBatchFinalized(batch.batchId);
+                        // Use the numeric batch ID for contract interaction
+                        const batchData = await contract.batches(currentBatchId);
+                        const isVerified = batchData.verified;
+                        const isFinalized = batchData.finalized;
+
+                        // Don't automatically update the database - let the user verify the batch manually
+                        // This ensures batches start in a pending state and only get marked as verified when explicitly verified
 
                         return {
                             ...batch,
@@ -75,7 +93,7 @@ export default function AdminBatchManager({ isAdmin }: AdminBatchManagerProps) {
                             finalized: isFinalized
                         };
                     } catch (err) {
-                        console.warn(`Failed to get on-chain data for batch ${batch.batchId}:`, err);
+                        console.warn(`Failed to get on-chain data for batch ${batch.id}:`, err);
                         return batch;
                     }
                 }));
@@ -119,10 +137,10 @@ export default function AdminBatchManager({ isAdmin }: AdminBatchManagerProps) {
     };
 
     const handleSubmitBatch = async () => {
-        if (!address || !isAdmin) {
+        if (!address || (!isAdmin && !isOperator)) {
             toast({
                 title: "Error",
-                description: "You need admin privileges to submit batches",
+                description: "You need admin or operator privileges to submit batches",
                 variant: "destructive",
             });
             return;
@@ -168,10 +186,10 @@ export default function AdminBatchManager({ isAdmin }: AdminBatchManagerProps) {
     };
 
     const handleVerifyBatch = async (batchId: string) => {
-        if (!address || !isAdmin) {
+        if (!address) {
             toast({
                 title: "Error",
-                description: "You need admin privileges to verify batches",
+                description: "Please connect your wallet first",
                 variant: "destructive",
             });
             return;
@@ -179,17 +197,47 @@ export default function AdminBatchManager({ isAdmin }: AdminBatchManagerProps) {
 
         setIsLoading(true);
         try {
-            await verifyBatch(batchId);
+            const contract = await getContract();
+            if (!contract) {
+                throw new Error('Failed to get contract instance');
+            }
+
+            // Get the numeric batch ID from the contract
+            const nextBatchId = await contract.nextBatchId();
+            // Calculate the current batch ID (nextBatchId - 1)
+            const numericBatchId = nextBatchId - 1n;
+
+            // Verify the batch on the contract using the numeric ID
+            const tx = await contract.verifyBatch(numericBatchId);
+            await tx.wait();
+
+            // Update the database using the UUID
+            const response = await fetch('http://localhost:5500/api/batches/verify', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-admin-address': address
+                },
+                body: JSON.stringify({ batchId }),
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.error || 'Failed to update batch status in database');
+            }
+
             toast({
                 title: "Success",
                 description: "Batch verified successfully",
             });
+
+            // Refresh batches
             await fetchBatches();
         } catch (error) {
-            console.error("Error verifying batch:", error);
+            console.error('Error verifying batch:', error);
             toast({
                 title: "Error",
-                description: "Failed to verify batch",
+                description: error instanceof Error ? error.message : 'Failed to verify batch',
                 variant: "destructive",
             });
         } finally {
@@ -198,40 +246,64 @@ export default function AdminBatchManager({ isAdmin }: AdminBatchManagerProps) {
     };
 
     const handleFinalizeBatch = async (batchId: string) => {
-        if (!address || !isAdmin) {
-            toast({
-                title: "Error",
-                description: "You need admin privileges to finalize batches",
-                variant: "destructive",
-            });
-            return;
-        }
-
-        setIsLoading(true);
         try {
-            await finalizeBatch(parseInt(batchId));
+            if (!address) {
+                toast({
+                    title: "Error",
+                    description: "Please connect your wallet first",
+                    variant: "destructive",
+                });
+                return;
+            }
+
+            const contract = await getContract();
+            if (!contract) {
+                throw new Error('Failed to get contract instance');
+            }
+
+            // Get the numeric batch ID from the contract
+            const nextBatchId = await contract.nextBatchId();
+            // Calculate the current batch ID (nextBatchId - 1)
+            const numericBatchId = nextBatchId - 1n;
+
+            // Finalize the batch on the contract using the numeric ID
+            const tx = await contract.finalizeBatch(numericBatchId);
+            await tx.wait();
+
+            // Update the database using the UUID
+            const response = await fetch('http://localhost:5500/api/batches/finalize', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-admin-address': address
+                },
+                body: JSON.stringify({ batchId }),
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to update batch status in database');
+            }
+
             toast({
                 title: "Success",
                 description: "Batch finalized successfully",
             });
-            await fetchBatches();
+            fetchBatches();
         } catch (error) {
-            console.error("Error finalizing batch:", error);
+            console.error('Error finalizing batch:', error);
             toast({
                 title: "Error",
-                description: "Failed to finalize batch",
+                description: error instanceof Error ? error.message : 'Failed to finalize batch',
                 variant: "destructive",
             });
-        } finally {
-            setIsLoading(false);
         }
     };
 
     const handleRejectBatch = async (batchId: string) => {
-        if (!address || !isAdmin) {
+        if (!address) {
             toast({
                 title: "Error",
-                description: "You need admin privileges to reject batches",
+                description: "Please connect your wallet first",
                 variant: "destructive",
             });
             return;
@@ -239,20 +311,33 @@ export default function AdminBatchManager({ isAdmin }: AdminBatchManagerProps) {
 
         setIsLoading(true);
         try {
-            // In a real implementation, we would:
-            // 1. Call the smart contract to reject the batch
-            // 2. Update the database status
-            // For now, we'll just show a success message
+            // Update the database to reject the batch
+            const response = await fetch('http://localhost:5500/api/batches/reject', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-admin-address': address
+                },
+                body: JSON.stringify({ batchId }),
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.error || 'Failed to reject batch');
+            }
+
             toast({
                 title: "Success",
                 description: "Batch rejected successfully",
             });
+
+            // Refresh batches
             await fetchBatches();
         } catch (error) {
-            console.error("Error rejecting batch:", error);
+            console.error('Error rejecting batch:', error);
             toast({
                 title: "Error",
-                description: "Failed to reject batch",
+                description: error instanceof Error ? error.message : 'Failed to reject batch',
                 variant: "destructive",
             });
         } finally {
@@ -262,16 +347,37 @@ export default function AdminBatchManager({ isAdmin }: AdminBatchManagerProps) {
 
     const getStatusBadge = (batch: Batch) => {
         if (batch.finalized) {
-            return <Badge variant="default">Finalized</Badge>;
+            return <Badge variant="default" className="flex items-center gap-1"><CheckCircle size={14} /> Finalized</Badge>;
         }
         if (batch.verified) {
-            return <Badge variant="secondary">Verified</Badge>;
+            return <Badge variant="secondary" className="flex items-center gap-1"><Clock size={14} /> In Challenge Period</Badge>;
         }
-        return <Badge variant="outline">Pending</Badge>;
+        return <Badge variant="outline" className="flex items-center gap-1"><AlertTriangle size={14} /> Pending</Badge>;
     };
 
     const formatTimestamp = (timestamp: Date) => {
         return formatDistanceToNow(new Date(timestamp), { addSuffix: true });
+    };
+
+    const toggleBatchDetails = (batchId: string) => {
+        if (expandedBatchId === batchId) {
+            setExpandedBatchId(null);
+        } else {
+            setExpandedBatchId(batchId);
+        }
+    };
+
+    const filteredBatches = () => {
+        switch (activeTab) {
+            case "pending":
+                return batches.filter(batch => !batch.verified && !batch.finalized);
+            case "verified":
+                return batches.filter(batch => batch.verified && !batch.finalized);
+            case "finalized":
+                return batches.filter(batch => batch.finalized);
+            default:
+                return batches;
+        }
     };
 
     if (!isConnected) {
@@ -286,7 +392,7 @@ export default function AdminBatchManager({ isAdmin }: AdminBatchManagerProps) {
         );
     }
 
-    if (isLoading) {
+    if (isLoading && batches.length === 0) {
         return (
             <Card className="glass-card border border-white/10 backdrop-blur-md bg-black/30">
                 <CardContent className="py-8">
@@ -310,18 +416,6 @@ export default function AdminBatchManager({ isAdmin }: AdminBatchManagerProps) {
         );
     }
 
-    if (batches.length === 0) {
-        return (
-            <Card className="glass-card border border-white/10 backdrop-blur-md bg-black/30">
-                <CardContent className="py-8">
-                    <div className="text-center text-white/70">
-                        No batches found
-                    </div>
-                </CardContent>
-            </Card>
-        );
-    }
-
     return (
         <Card className="glass-card border border-white/10 backdrop-blur-md bg-black/30">
             <CardHeader>
@@ -329,12 +423,12 @@ export default function AdminBatchManager({ isAdmin }: AdminBatchManagerProps) {
                     Batch Management
                 </CardTitle>
                 <CardDescription className="text-white/70">
-                    {isAdmin ? "Manage and verify network batches" : "View and verify network batches"}
+                    {isAdmin ? "Manage and verify network batches" : isOperator ? "Operate and verify network batches" : "View network batches"}
                 </CardDescription>
             </CardHeader>
             <CardContent>
                 <div className="space-y-4">
-                    {isAdmin && (
+                    {(isAdmin || isOperator) && (
                         <Button
                             onClick={handleSubmitBatch}
                             disabled={isLoading}
@@ -343,51 +437,171 @@ export default function AdminBatchManager({ isAdmin }: AdminBatchManagerProps) {
                             Submit New Batch
                         </Button>
                     )}
-                    {batches.map((batch) => (
-                        <div key={batch.id} className="p-4 rounded-lg bg-white/5 space-y-4">
-                            <div className="flex justify-between items-center">
-                                <div>
-                                    <h3 className="text-lg font-semibold text-white">
-                                        Batch #{batch.batchId}
-                                    </h3>
-                                    <p className="text-sm text-white/70">
-                                        Root: {batch.transactionsRoot.slice(0, 10)}...
-                                    </p>
-                                </div>
-                                <div className="flex gap-2">
-                                    {!batch.verified && isAdmin && (
-                                        <Button
-                                            onClick={() => handleVerifyBatch(batch.batchId)}
-                                            disabled={isLoading}
-                                            className="bg-green-500 hover:bg-green-600"
-                                        >
-                                            Verify
-                                        </Button>
-                                    )}
-                                    {batch.verified && !batch.finalized && isAdmin && (
-                                        <>
-                                            <Button
-                                                onClick={() => handleFinalizeBatch(batch.batchId)}
-                                                disabled={isLoading}
-                                                className="bg-blue-500 hover:bg-blue-600"
-                                            >
-                                                Finalize
-                                            </Button>
-                                            <Button
-                                                onClick={() => handleRejectBatch(batch.batchId)}
-                                                disabled={isLoading}
-                                                variant="destructive"
-                                            >
-                                                Reject
-                                            </Button>
-                                        </>
-                                    )}
-                                </div>
-                            </div>
-                        </div>
-                    ))}
+
+                    <Tabs defaultValue="all" className="w-full" onValueChange={setActiveTab}>
+                        <TabsList className="grid grid-cols-4 mb-4">
+                            <TabsTrigger value="all">All Batches</TabsTrigger>
+                            <TabsTrigger value="pending">Pending</TabsTrigger>
+                            <TabsTrigger value="verified">In Challenge</TabsTrigger>
+                            <TabsTrigger value="finalized">Finalized</TabsTrigger>
+                        </TabsList>
+
+                        <TabsContent value="all" className="mt-0">
+                            {renderBatchTable(filteredBatches())}
+                        </TabsContent>
+                        <TabsContent value="pending" className="mt-0">
+                            {renderBatchTable(filteredBatches())}
+                        </TabsContent>
+                        <TabsContent value="verified" className="mt-0">
+                            {renderBatchTable(filteredBatches())}
+                        </TabsContent>
+                        <TabsContent value="finalized" className="mt-0">
+                            {renderBatchTable(filteredBatches())}
+                        </TabsContent>
+                    </Tabs>
                 </div>
             </CardContent>
         </Card>
     );
+
+    function renderBatchTable(batchesToRender: Batch[]) {
+        if (batchesToRender.length === 0) {
+            return (
+                <div className="text-center py-8 text-white/70">
+                    No batches found in this category
+                </div>
+            );
+        }
+
+        return (
+            <div className="space-y-4">
+                {batchesToRender.map((batch) => (
+                    <Collapsible
+                        key={batch.id}
+                        open={expandedBatchId === batch.id}
+                        onOpenChange={() => toggleBatchDetails(batch.id)}
+                        className="border border-white/10 rounded-lg overflow-hidden"
+                    >
+                        <div className="p-4 bg-white/5">
+                            <div className="flex justify-between items-center">
+                                <div className="flex items-center gap-2">
+                                    <CollapsibleTrigger asChild>
+                                        <Button variant="ghost" size="sm" className="p-0 h-8 w-8">
+                                            {expandedBatchId === batch.id ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                                        </Button>
+                                    </CollapsibleTrigger>
+                                    <div>
+                                        <h3 className="text-lg font-semibold text-white">
+                                            Batch #{batch.batchId}
+                                        </h3>
+                                        <p className="text-sm text-white/70">
+                                            Root: {batch.transactionsRoot.slice(0, 10)}...{batch.transactionsRoot.slice(-8)}
+                                        </p>
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-4">
+                                    <div className="flex gap-2">
+                                        {getStatusBadge(batch)}
+                                    </div>
+                                    <div className="flex gap-2">
+                                        {!batch.verified && (isAdmin || isOperator) && (
+                                            <Button
+                                                onClick={() => handleVerifyBatch(batch.batchId)}
+                                                disabled={isLoading}
+                                                className="bg-green-500 hover:bg-green-600"
+                                            >
+                                                Verify
+                                            </Button>
+                                        )}
+                                        {batch.verified && !batch.finalized && (isAdmin || isOperator) && (
+                                            <>
+                                                <Button
+                                                    onClick={() => handleFinalizeBatch(batch.batchId)}
+                                                    disabled={isLoading}
+                                                    className="bg-blue-500 hover:bg-blue-600"
+                                                >
+                                                    Finalize
+                                                </Button>
+                                                <Button
+                                                    onClick={() => handleRejectBatch(batch.batchId)}
+                                                    disabled={isLoading}
+                                                    variant="destructive"
+                                                >
+                                                    Reject
+                                                </Button>
+                                            </>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <CollapsibleContent>
+                            <div className="p-4 bg-white/5 border-t border-white/10">
+                                <div className="grid grid-cols-2 gap-4 mb-4">
+                                    <div>
+                                        <h4 className="text-sm font-medium text-white/70">Batch Details</h4>
+                                        <div className="mt-2 space-y-1">
+                                            <p className="text-sm text-white"><span className="text-white/70">ID:</span> {batch.batchId}</p>
+                                            <p className="text-sm text-white"><span className="text-white/70">Merkle Root:</span> {batch.transactionsRoot}</p>
+                                            <p className="text-sm text-white"><span className="text-white/70">Timestamp:</span> {formatTimestamp(new Date(batch.timestamp))}</p>
+                                            <p className="text-sm text-white"><span className="text-white/70">Transactions:</span> {batch.transactions.length}</p>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <h4 className="text-sm font-medium text-white/70">Status</h4>
+                                        <div className="mt-2 space-y-1">
+                                            <p className="text-sm text-white">
+                                                <span className="text-white/70">Verified:</span> {batch.verified ? "Yes" : "No"}
+                                            </p>
+                                            <p className="text-sm text-white">
+                                                <span className="text-white/70">Finalized:</span> {batch.finalized ? "Yes" : "No"}
+                                            </p>
+                                            <p className="text-sm text-white">
+                                                <span className="text-white/70">Challenge Period:</span> {batch.verified && !batch.finalized ? "Active" : "Not Active"}
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <h4 className="text-md font-semibold text-white mb-2">Transactions</h4>
+                                <Table>
+                                    <TableHeader>
+                                        <TableRow>
+                                            <TableHead>From</TableHead>
+                                            <TableHead>To</TableHead>
+                                            <TableHead>Amount</TableHead>
+                                            <TableHead>Status</TableHead>
+                                            <TableHead>Timestamp</TableHead>
+                                        </TableRow>
+                                    </TableHeader>
+                                    <TableBody>
+                                        {batch.transactions.map((tx, index) => (
+                                            <TableRow key={index}>
+                                                <TableCell className="font-mono text-sm">
+                                                    {tx.from.slice(0, 6)}...{tx.from.slice(-4)}
+                                                </TableCell>
+                                                <TableCell className="font-mono text-sm">
+                                                    {tx.to.slice(0, 6)}...{tx.to.slice(-4)}
+                                                </TableCell>
+                                                <TableCell>{tx.value} ETH</TableCell>
+                                                <TableCell>
+                                                    <Badge variant={tx.status === 'pending' ? 'outline' : 'default'}>
+                                                        {tx.status}
+                                                    </Badge>
+                                                </TableCell>
+                                                <TableCell>
+                                                    {new Date(tx.timestamp * 1000).toLocaleString()}
+                                                </TableCell>
+                                            </TableRow>
+                                        ))}
+                                    </TableBody>
+                                </Table>
+                            </div>
+                        </CollapsibleContent>
+                    </Collapsible>
+                ))}
+            </div>
+        );
+    }
 } 
