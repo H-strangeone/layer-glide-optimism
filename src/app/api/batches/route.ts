@@ -20,7 +20,7 @@ export async function GET() {
             id: batch.batchId,
             status: batch.status,
             transactionsRoot: batch.transactionsRoot,
-            timestamp: batch.timestamp.getTime(),
+            createdAt: batch.createdAt.getTime(),
             transactionCount: batch._count.transactions
         }));
 

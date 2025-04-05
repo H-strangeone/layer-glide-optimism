@@ -3,10 +3,7 @@ import { ethers, EventLog, Log } from 'ethers';
 
 import { toast } from "@/components/ui/use-toast";
 import { db } from './db';
-import { PrismaClient } from '@prisma/client';
 import { CONTRACT_ADDRESS } from "@/config/contract";
-
-const prisma = new PrismaClient();
 
 // Contract ABI
 const CONTRACT_ABI = [
@@ -81,7 +78,7 @@ export interface TransactionHistory {
   value: string;
   status: string;
   gasPrice: string;
-  timestamp: number;
+  createdAt: number;
 }
 
 export interface TransactionEvent {
@@ -192,7 +189,7 @@ export const getTransactionHistory = async (address: string): Promise<Transactio
           value: eventLog.args[2].toString(), // amount
           status: "confirmed", // Since we're getting past events, they're confirmed
           gasPrice: eventLog.args[3]?.toString() || "0", // gas price if available
-          timestamp: block?.timestamp || Math.floor(Date.now() / 1000)
+          createdAt: block?.timestamp || Math.floor(Date.now() / 1000) // Use createdAt instead of timestamp
         };
       }));
 
@@ -208,7 +205,11 @@ export const getTransactionHistory = async (address: string): Promise<Transactio
         }
 
         const data = await response.json();
-        return data;
+        // Ensure all transactions have createdAt field
+        return data.map((tx: any) => ({
+          ...tx,
+          createdAt: tx.createdAt || tx.timestamp || Math.floor(Date.now() / 1000)
+        }));
       } catch (apiError) {
         console.error("Error getting transaction history from API:", apiError);
         return [];
@@ -788,22 +789,23 @@ export const switchNetwork = async (networkName: "sepolia" | "localhost") => {
 // Track contract deployment
 const trackContractDeployment = async (address: string, network: string) => {
   try {
-    // Deactivate previous deployments for this network
-    await prisma.contractDeployment.updateMany({
-      where: { network, isActive: true },
-      data: { isActive: false }
+    // Use fetch API to update contract deployment
+    const response = await fetch('http://localhost:5500/api/contract/deployment', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ address, network }),
     });
 
-    // Create new deployment record
-    await prisma.contractDeployment.create({
-      data: {
-        address,
-        network,
-        isActive: true
-      }
-    });
+    if (!response.ok) {
+      throw new Error(`Failed to track contract deployment: ${response.statusText}`);
+    }
+
+    return await response.json();
   } catch (error) {
     console.error('Error tracking contract deployment:', error);
+    throw error;
   }
 };
 

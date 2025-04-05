@@ -1,10 +1,8 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import "@fontsource/inter";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
 import { WalletProvider } from "@/hooks/useWallet";
-
-const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
     title: "L2 Optimistic Rollup",
@@ -18,7 +16,7 @@ export default function RootLayout({
 }>) {
     return (
         <html lang="en">
-            <body className={inter.className}>
+            <body className="font-inter">
                 <WalletProvider>
                     <div className="min-h-screen bg-[#0a0b14]">
                         <nav className="bg-[#1a1b26] border-b border-purple-400/20">

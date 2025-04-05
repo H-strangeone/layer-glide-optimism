@@ -44,7 +44,8 @@ model Transaction {
   to        String
   amount    String
   status    String
-  timestamp DateTime @default(now())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model Balance {
@@ -59,12 +60,14 @@ model Batch {
   id              String   @id @default(uuid())
   batchId         String   @unique
   transactionsRoot String
-  timestamp       DateTime @default(now())
   verified        Boolean  @default(false)
   finalized       Boolean  @default(false)
-  transactions    BatchTransaction[]
+  rejected        Boolean  @default(false)
+  creatorAddress  String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+  transactions    BatchTransaction[]
+  challenges      BatchChallenge[]
 }
 
 model BatchTransaction {
@@ -73,9 +76,20 @@ model BatchTransaction {
   to        String
   value     String
   status    String   @default("pending")
-  timestamp DateTime @default(now())
   batchId   String
   batch     Batch    @relation(fields: [batchId], references: [id])
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model BatchChallenge {
+  id                String   @id @default(uuid())
+  batch            Batch    @relation(fields: [batchId], references: [id])
+  batchId          String
+  challengerAddress String
+  status           String   // pending, accepted, rejected
+  resolvedBy       String?
+  resolvedAt       DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 } 

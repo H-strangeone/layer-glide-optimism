@@ -10,6 +10,8 @@ import Index from './pages/Index';
 import Transactions from './pages/Transactions';
 import Withdraw from './pages/Withdraw';
 import Admin from './pages/Admin';
+import Batches from './pages/batches';
+import FraudProofPage from './pages/fraud-proof';
 import NotFound from './pages/NotFound';
 import { config } from './lib/wagmi';
 
@@ -27,8 +29,10 @@ function App() {
                 <Routes>
                   <Route path="/" element={<Index />} />
                   <Route path="/transactions" element={<Transactions />} />
+                  <Route path="/batches" element={<Batches />} />
                   <Route path="/withdraw" element={<Withdraw />} />
                   <Route path="/admin" element={<Admin />} />
+                  <Route path="/fraud-proof" element={<FraudProofPage />} />
                   <Route path="*" element={<NotFound />} />
                 </Routes>
               </main>

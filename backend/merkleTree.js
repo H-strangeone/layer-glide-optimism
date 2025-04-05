@@ -1,95 +1,101 @@
+import { ethers } from 'ethers';
 
-const { ethers } = require('ethers');
-
+/**
+ * A simple Merkle tree implementation for generating and verifying Merkle proofs
+ */
 class MerkleTree {
-  constructor(transactions) {
-    // Create leaf nodes
-    this.leaves = transactions.map(tx => this.hashTransaction(tx));
+  /**
+   * Creates a new Merkle tree from an array of leaves
+   * @param {Array<string>} leaves - Array of leaf hashes
+   */
+  constructor(leaves) {
+    this.leaves = leaves;
+    this.layers = [leaves];
     this.buildTree();
   }
 
-  hashTransaction(transaction) {
-    const encodedData = JSON.stringify({
-      sender: transaction.sender.toLowerCase(),
-      recipient: transaction.recipient.toLowerCase(),
-      amount: transaction.amount
-    });
-    
-    return ethers.utils.keccak256(ethers.utils.toUtf8Bytes(encodedData));
-  }
-
+  /**
+   * Builds the Merkle tree from the leaves
+   */
   buildTree() {
-    this.layers = [this.leaves];
-    
-    // Build the Merkle tree bottom-up
-    while (this.layers[this.layers.length - 1].length > 1) {
-      const currentLayer = this.layers[this.layers.length - 1];
+    let currentLayer = this.leaves;
+
+    while (currentLayer.length > 1) {
       const nextLayer = [];
-      
+
       for (let i = 0; i < currentLayer.length; i += 2) {
-        if (i + 1 < currentLayer.length) {
-          const left = currentLayer[i];
-          const right = currentLayer[i + 1];
-          nextLayer.push(this.hashPair(left, right));
-        } else {
-          // If odd number of elements, duplicate the last one
-          nextLayer.push(currentLayer[i]);
-        }
+        const left = currentLayer[i];
+        const right = i + 1 < currentLayer.length ? currentLayer[i + 1] : left;
+
+        const combined = ethers.utils.keccak256(
+          ethers.utils.concat([left, right])
+        );
+
+        nextLayer.push(combined);
       }
-      
+
       this.layers.push(nextLayer);
+      currentLayer = nextLayer;
     }
   }
 
-  hashPair(left, right) {
-    // Sort the hashes to ensure the same result regardless of order
-    const sortedHashes = [left, right].sort();
-    return ethers.utils.keccak256(
-      ethers.utils.concat([
-        ethers.utils.arrayify(sortedHashes[0]),
-        ethers.utils.arrayify(sortedHashes[1])
-      ])
-    );
-  }
-
+  /**
+   * Gets the Merkle root of the tree
+   * @returns {string} The Merkle root hash
+   */
   getRoot() {
     return this.layers[this.layers.length - 1][0];
   }
 
+  /**
+   * Gets a Merkle proof for a leaf at the specified index
+   * @param {number} index - The index of the leaf
+   * @returns {Array<string>} The Merkle proof
+   */
   getProof(index) {
-    if (index < 0 || index >= this.leaves.length) {
-      throw new Error('Index out of range');
-    }
-    
     const proof = [];
     let currentIndex = index;
-    
+
     for (let i = 0; i < this.layers.length - 1; i++) {
-      const currentLayer = this.layers[i];
-      const isRightNode = currentIndex % 2 === 0;
-      const siblingIndex = isRightNode ? currentIndex + 1 : currentIndex - 1;
-      
-      if (siblingIndex < currentLayer.length) {
-        proof.push(currentLayer[siblingIndex]);
+      const layer = this.layers[i];
+      const isRight = currentIndex % 2 === 1;
+      const siblingIndex = isRight ? currentIndex - 1 : currentIndex + 1;
+
+      if (siblingIndex < layer.length) {
+        proof.push(layer[siblingIndex]);
+      } else {
+        // If there's no sibling, use the node itself
+        proof.push(layer[currentIndex]);
       }
-      
-      // Update index for the next layer
+
       currentIndex = Math.floor(currentIndex / 2);
     }
-    
+
     return proof;
   }
 
-  verifyProof(transaction, proof, root) {
-    let leaf = this.hashTransaction(transaction);
+  /**
+   * Verifies a Merkle proof
+   * @param {string} leaf - The leaf hash
+   * @param {Array<string>} proof - The Merkle proof
+   * @param {string} root - The Merkle root
+   * @returns {boolean} Whether the proof is valid
+   */
+  static verify(leaf, proof, root) {
     let currentHash = leaf;
-    
+
     for (const proofElement of proof) {
-      currentHash = this.hashPair(currentHash, proofElement);
+      const [left, right] = currentHash < proofElement
+        ? [currentHash, proofElement]
+        : [proofElement, currentHash];
+
+      currentHash = ethers.utils.keccak256(
+        ethers.utils.concat([left, right])
+      );
     }
-    
+
     return currentHash === root;
   }
 }
 
-module.exports = MerkleTree;
+export default MerkleTree;

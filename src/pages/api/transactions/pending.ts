@@ -10,13 +10,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     try {
         // Get all pending transactions that haven't been included in a batch
-        const transactions = await prisma.transaction.findMany({
+        const transactions = await prisma.batchTransaction.findMany({
             where: {
-                status: 'pending',
-                batchId: null
+                status: 'pending'
             },
             orderBy: {
-                timestamp: 'asc'
+                createdAt: 'asc'
+            },
+            include: {
+                batch: true
             }
         });
 

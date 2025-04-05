@@ -8,32 +8,24 @@ import { formatDistanceToNow } from "date-fns";
 import { formatEther } from "ethers";
 import { useWallet } from "@/hooks/useWallet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Link } from 'react-router-dom';
 
-// Define the TransactionHistory interface
-interface TransactionHistory {
+// Helper function to format addresses
+const formatAddress = (address: string) => {
+  return `${address.substring(0, 6)}...${address.substring(address.length - 4)}`;
+};
+
+// Define the Transaction interface
+interface Transaction {
   hash: string;
   from: string;
   to: string;
   value: string;
   status: string;
-  gasPrice?: string;
-  timestamp: number;
+  createdAt: number;
   batchId?: string;
   type?: string;
   isInBatch?: boolean;
-}
-
-interface Transaction extends TransactionHistory {
-  type: string;
-  isInBatch: boolean;
-}
-
-interface Batch {
-  id: string;
-  status: string;
-  transactions: Transaction[];
-  timestamp: number;
-  size: number;
 }
 
 interface TransactionTrackerProps {
@@ -43,40 +35,12 @@ interface TransactionTrackerProps {
 
 export function TransactionTracker({ mode = 'user', address }: TransactionTrackerProps) {
   const { isConnected } = useWallet();
-  const [layer1Balance, setLayer1Balance] = useState<string>("0");
-  const [layer2Balance, setLayer2Balance] = useState<string>("0");
   const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [batches, setBatches] = useState<Batch[]>([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<string | null>(null);
   const { toast } = useToast();
 
-  const fetchBalances = async (address: string) => {
-    try {
-      const [l1Balance, l2Balance] = await Promise.all([
-        getLayer1Balance(address),
-        getLayer2Balance(address)
-      ]);
-
-      // Format the balances with proper decimal places and handle NaN
-      const formatBalance = (balance: string) => {
-        const num = Number(balance);
-        return isNaN(num) ? "0.000000" : num.toFixed(6);
-      };
-
-      setLayer1Balance(formatBalance(l1Balance));
-      setLayer2Balance(formatBalance(l2Balance));
-    } catch (error) {
-      console.error("Error fetching balances:", error);
-      setError('Failed to fetch balances');
-      setLayer1Balance("0.000000");
-      setLayer2Balance("0.000000");
-    }
-  };
-
   const fetchUserTransactions = async (address: string) => {
-    if (!address) return;
-
     try {
       setLoading(true);
       const response = await fetch(`http://localhost:5500/api/transactions/user/${address}`);
@@ -85,12 +49,12 @@ export function TransactionTracker({ mode = 'user', address }: TransactionTracke
       }
       const data = await response.json();
       setTransactions(data);
-      await fetchBalances(address);
     } catch (error) {
       console.error("Error fetching user transactions:", error);
+      setError('Failed to fetch user transactions');
       toast({
         title: "Error",
-        description: "Failed to fetch transaction history",
+        description: "Failed to fetch user transaction history",
         variant: "destructive",
       });
     } finally {
@@ -152,7 +116,7 @@ export function TransactionTracker({ mode = 'user', address }: TransactionTracke
   };
 
   const formatTimestamp = (timestamp: number) => {
-    return formatDistanceToNow(new Date(timestamp * 1000), { addSuffix: true });
+    return formatDistanceToNow(new Date(timestamp), { addSuffix: true });
   };
 
   const getTransactionType = (type: string) => {
@@ -167,175 +131,66 @@ export function TransactionTracker({ mode = 'user', address }: TransactionTracke
     }
   };
 
-  // Render user transaction history
-  if (mode === 'user') {
+  if (loading) {
     return (
-      <Card className="glass-card border border-white/10 backdrop-blur-md bg-black/30">
-        <CardHeader>
-          <CardTitle className="text-xl bg-gradient-to-r from-purple-400 to-pink-500 bg-clip-text text-transparent">
-            Your Transaction History
-          </CardTitle>
-          <CardDescription className="text-white/70">
-            {isConnected ? "View your recent Layer 2 transactions" : "Connect your wallet to view your transactions"}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {!isConnected ? (
-            <div className="text-center py-8 text-white/70">
-              Please connect your wallet to view your transaction history
-            </div>
-          ) : loading ? (
-            <div className="text-center py-8">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-500 mx-auto"></div>
-              <p className="mt-2 text-white/70">Loading transactions...</p>
-            </div>
-          ) : error ? (
-            <div className="text-center py-8 text-red-400">
-              {error}
-            </div>
-          ) : transactions.length === 0 ? (
-            <div className="text-center py-8 text-white/70">
-              No transactions found
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Type</TableHead>
-                    <TableHead>From</TableHead>
-                    <TableHead>To</TableHead>
-                    <TableHead>Amount</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Time</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {transactions.map((tx, index) => (
-                    <TableRow key={index}>
-                      <TableCell>{getTransactionType(tx.type)}</TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {tx.from.substring(0, 6)}...{tx.from.substring(tx.from.length - 4)}
-                      </TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {tx.to.substring(0, 6)}...{tx.to.substring(tx.to.length - 4)}
-                      </TableCell>
-                      <TableCell>
-                        {(() => {
-                          try {
-                            // Check if the value is a valid number string
-                            if (tx.value && !isNaN(Number(tx.value))) {
-                              // If it's a decimal string, just display it directly
-                              if (tx.value.includes('.')) {
-                                return `${tx.value} ETH`;
-                              }
-                              // Otherwise use formatEther
-                              return `${formatEther(tx.value)} ETH`;
-                            }
-                            return '0 ETH';
-                          } catch (error) {
-                            console.error('Error formatting value:', error);
-                            return '0 ETH';
-                          }
-                        })()}
-                      </TableCell>
-                      <TableCell>{getStatusBadge(tx.status)}</TableCell>
-                      <TableCell>{formatTimestamp(tx.timestamp)}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+      <div className="flex items-center justify-center p-8">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900"></div>
+      </div>
     );
   }
 
-  // Render network transaction history
-  if (mode === 'network') {
+  if (error) {
     return (
-      <Card className="glass-card border border-white/10 backdrop-blur-md bg-black/30">
-        <CardHeader>
-          <CardTitle className="text-xl bg-gradient-to-r from-purple-400 to-pink-500 bg-clip-text text-transparent">
-            All Network Transactions
-          </CardTitle>
-          <CardDescription className="text-white/70">
-            View all transactions and batches processed on the Layer 2 network
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {loading ? (
-            <div className="text-center py-8">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-500 mx-auto"></div>
-              <p className="mt-2 text-white/70">Loading transactions...</p>
-            </div>
-          ) : error ? (
-            <div className="text-center py-8 text-red-400">
-              {error}
-            </div>
-          ) : transactions.length === 0 ? (
-            <div className="text-center py-8 text-white/70">
-              No transactions found
-            </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Type</TableHead>
-                  <TableHead>From</TableHead>
-                  <TableHead>To</TableHead>
-                  <TableHead>Amount</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Batch</TableHead>
-                  <TableHead>Time</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {transactions.map((tx, index) => (
-                  <TableRow key={index}>
-                    <TableCell>
-                      {tx.isInBatch ? (
-                        <Badge variant="secondary">Batch</Badge>
-                      ) : (
-                        <Badge variant="outline">{getTransactionType(tx.type)}</Badge>
-                      )}
-                    </TableCell>
-                    <TableCell className="font-mono text-xs">
-                      {tx.from.substring(0, 6)}...{tx.from.substring(tx.from.length - 4)}
-                    </TableCell>
-                    <TableCell className="font-mono text-xs">
-                      {tx.to.substring(0, 6)}...{tx.to.substring(tx.to.length - 4)}
-                    </TableCell>
-                    <TableCell>
-                      {(() => {
-                        try {
-                          // Check if the value is a valid number string
-                          if (tx.value && !isNaN(Number(tx.value))) {
-                            // If it's a decimal string, just display it directly
-                            if (tx.value.includes('.')) {
-                              return `${tx.value} ETH`;
-                            }
-                            // Otherwise use formatEther
-                            return `${formatEther(tx.value)} ETH`;
-                          }
-                          return '0 ETH';
-                        } catch (error) {
-                          console.error('Error formatting value:', error);
-                          return '0 ETH';
-                        }
-                      })()}
-                    </TableCell>
-                    <TableCell>{getStatusBadge(tx.status)}</TableCell>
-                    <TableCell>{tx.batchId || '-'}</TableCell>
-                    <TableCell>{formatTimestamp(tx.timestamp)}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
+      <div className="p-4 text-red-500">
+        <p>{error}</p>
+      </div>
     );
   }
+
+  if (transactions.length === 0) {
+    return (
+      <div className="p-4 text-gray-500">
+        <p>No transactions found.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Type</TableHead>
+            <TableHead>From</TableHead>
+            <TableHead>To</TableHead>
+            <TableHead>Value</TableHead>
+            <TableHead>Status</TableHead>
+            <TableHead>Time</TableHead>
+            <TableHead>Batch</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {transactions.map((tx) => (
+            <TableRow key={tx.hash}>
+              <TableCell>{getTransactionType(tx.type || 'transfer')}</TableCell>
+              <TableCell className="font-mono">{formatAddress(tx.from)}</TableCell>
+              <TableCell className="font-mono">{formatAddress(tx.to)}</TableCell>
+              <TableCell>{formatEther(tx.value)} ETH</TableCell>
+              <TableCell>{getStatusBadge(tx.status)}</TableCell>
+              <TableCell>{formatTimestamp(tx.createdAt)}</TableCell>
+              <TableCell>
+                {tx.batchId ? (
+                  <Link to={`/batches/${tx.batchId}`} className="text-blue-500 hover:underline">
+                    {tx.batchId}
+                  </Link>
+                ) : (
+                  'Not in batch'
+                )}
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
+  );
 }

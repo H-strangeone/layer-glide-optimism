@@ -107,7 +107,7 @@ export const BatchDetails = ({ batch }: BatchDetailsProps) => {
                                                 <Badge variant="success">{tx.status}</Badge>
                                             </TableCell>
                                             <TableCell>
-                                                {new Date(tx.timestamp * 1000).toLocaleString()}
+                                                {new Date(tx.createdAt * 1000).toLocaleString()}
                                             </TableCell>
                                         </TableRow>
                                     ))}

@@ -7,11 +7,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (req.method === 'GET') {
         try {
             const batches = await prisma.batch.findMany({
+                orderBy: {
+                    createdAt: 'desc'
+                },
                 include: {
                     transactions: true
-                },
-                orderBy: {
-                    timestamp: 'desc'
                 }
             });
 
@@ -24,7 +24,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     if (req.method === 'POST') {
         try {
-            const { batchId, transactionsRoot, timestamp, transactions } = req.body;
+            const { batchId, transactionsRoot, transactions } = req.body;
 
             // Create batch with transactions in a transaction
             const batch = await prisma.$transaction(async (prisma) => {
@@ -32,14 +32,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     data: {
                         batchId,
                         transactionsRoot,
-                        timestamp: new Date(timestamp * 1000),
                         transactions: {
                             create: transactions.map((tx: any) => ({
                                 from: tx.from,
                                 to: tx.to,
                                 value: tx.value,
-                                status: tx.status,
-                                timestamp: new Date(tx.timestamp * 1000)
+                                status: tx.status
                             }))
                         }
                     },

@@ -1,7 +1,4 @@
-import { PrismaClient } from '@prisma/client';
 import { formatEther } from 'ethers';
-
-const prisma = new PrismaClient();
 
 export interface TransactionData {
     hash: string;
@@ -26,100 +23,166 @@ export interface Transaction {
     from: string;
     to: string;
     amount: string;
-    timestamp: Date;
+    createdAt: Date;
     status: 'pending' | 'completed' | 'failed';
     type: 'deposit' | 'withdrawal';
 }
 
 export const db = {
-    // Transaction operations
     async createTransaction(data: TransactionData) {
-        return prisma.transaction.create({
-            data: {
-                ...data,
-                status: 'pending'
+        try {
+            const response = await fetch('http://localhost:5500/api/transactions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(data),
+            });
+
+            if (!response.ok) {
+                throw new Error(`Failed to create transaction: ${response.statusText}`);
             }
-        });
+
+            return await response.json();
+        } catch (error) {
+            console.error('Error creating transaction:', error);
+            throw error;
+        }
     },
 
     async updateTransactionStatus(hash: string, status: 'pending' | 'completed' | 'failed') {
-        return prisma.transaction.update({
-            where: { hash },
-            data: { status }
-        });
+        try {
+            const response = await fetch(`http://localhost:5500/api/transactions/${hash}/status`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ status }),
+            });
+
+            if (!response.ok) {
+                throw new Error(`Failed to update transaction status: ${response.statusText}`);
+            }
+
+            return await response.json();
+        } catch (error) {
+            console.error('Error updating transaction status:', error);
+            throw error;
+        }
     },
 
     async getTransactionsByAddress(address: string) {
-        return prisma.transaction.findMany({
-            where: {
-                OR: [
-                    { from: address.toLowerCase() },
-                    { to: address.toLowerCase() }
-                ]
-            },
-            orderBy: { timestamp: 'desc' }
-        });
+        try {
+            const response = await fetch(`http://localhost:5500/api/transactions/user/${address}`);
+
+            if (!response.ok) {
+                throw new Error(`Failed to get transactions: ${response.statusText}`);
+            }
+
+            return await response.json();
+        } catch (error) {
+            console.error('Error getting transactions:', error);
+            return [];
+        }
     },
 
-    // Balance operations
     async getBalance(address: string) {
-        return prisma.balance.findUnique({
-            where: { address: address.toLowerCase() }
-        });
+        try {
+            const response = await fetch(`http://localhost:5500/api/balance/${address}`);
+
+            if (!response.ok) {
+                throw new Error(`Failed to get balance: ${response.statusText}`);
+            }
+
+            return await response.json();
+        } catch (error) {
+            console.error('Error getting balance:', error);
+            return { balance: '0' };
+        }
     },
 
     async updateBalance(address: string, layer1?: string, layer2?: string) {
-        const existing = await prisma.balance.findUnique({
-            where: { address: address.toLowerCase() }
-        });
-
-        if (existing) {
-            return prisma.balance.update({
-                where: { address: address.toLowerCase() },
-                data: {
-                    layer1: layer1 || existing.layer1,
-                    layer2: layer2 || existing.layer2
-                }
+        try {
+            const response = await fetch('http://localhost:5500/api/balance/update', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ address, layer1, layer2 }),
             });
-        }
 
-        return prisma.balance.create({
-            data: {
-                address: address.toLowerCase(),
-                layer1: layer1 || '0',
-                layer2: layer2 || '0'
+            if (!response.ok) {
+                throw new Error(`Failed to update balance: ${response.statusText}`);
             }
-        });
+
+            return await response.json();
+        } catch (error) {
+            console.error('Error updating balance:', error);
+            throw error;
+        }
     },
 
-    // Batch operations
     async createBatch(batchId: number, transactionsRoot: string) {
-        return prisma.batch.create({
-            data: {
-                batchId,
-                transactionsRoot,
-                status: 'pending'
+        try {
+            const response = await fetch('http://localhost:5500/api/batches', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ batchId, transactionsRoot }),
+            });
+
+            if (!response.ok) {
+                throw new Error(`Failed to create batch: ${response.statusText}`);
             }
-        });
+
+            return await response.json();
+        } catch (error) {
+            console.error('Error creating batch:', error);
+            throw error;
+        }
     },
 
     async updateBatchStatus(batchId: number, status: 'pending' | 'verified' | 'finalized') {
-        return prisma.batch.update({
-            where: { batchId },
-            data: { status }
-        });
+        try {
+            const response = await fetch(`http://localhost:5500/api/batches/${batchId}/status`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ status }),
+            });
+
+            if (!response.ok) {
+                throw new Error(`Failed to update batch status: ${response.statusText}`);
+            }
+
+            return await response.json();
+        } catch (error) {
+            console.error('Error updating batch status:', error);
+            throw error;
+        }
     },
 
     async getBatch(batchId: number) {
-        return prisma.batch.findUnique({
-            where: { batchId }
-        });
+        try {
+            const response = await fetch(`http://localhost:5500/api/batches/${batchId}`);
+
+            if (!response.ok) {
+                throw new Error(`Failed to get batch: ${response.statusText}`);
+            }
+
+            return await response.json();
+        } catch (error) {
+            console.error('Error getting batch:', error);
+            return null;
+        }
     }
 };
 
-export const createTransaction = async (transaction: Omit<Transaction, 'id' | 'timestamp'>) => {
+export const createTransaction = async (transaction: Omit<Transaction, 'id' | 'createdAt'>) => {
     try {
-        const response = await fetch('/api/transactions', {
+        const response = await fetch('http://localhost:5500/api/transactions', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -128,7 +191,7 @@ export const createTransaction = async (transaction: Omit<Transaction, 'id' | 't
         });
 
         if (!response.ok) {
-            throw new Error('Failed to create transaction');
+            throw new Error(`Failed to create transaction: ${response.statusText}`);
         }
 
         return await response.json();
@@ -140,13 +203,15 @@ export const createTransaction = async (transaction: Omit<Transaction, 'id' | 't
 
 export const getTransactions = async (): Promise<Transaction[]> => {
     try {
-        const response = await fetch('/api/transactions');
+        const response = await fetch('http://localhost:5500/api/transactions');
+
         if (!response.ok) {
-            throw new Error('Failed to fetch transactions');
+            throw new Error(`Failed to get transactions: ${response.statusText}`);
         }
+
         return await response.json();
     } catch (error) {
-        console.error('Error fetching transactions:', error);
-        throw error;
+        console.error('Error getting transactions:', error);
+        return [];
     }
 }; 

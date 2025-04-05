@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useWallet } from "@/hooks/useWallet";
-import { getTransactionHistory } from "@/lib/ethers";
 import { formatDistanceToNow } from 'date-fns';
 import { ChevronDown, ChevronUp, ExternalLink } from 'lucide-react';
 
@@ -12,8 +11,7 @@ interface Transaction {
   to: string;
   value: string;
   status: string;
-  gasPrice: string;
-  timestamp: number;
+  createdAt: number;
   batchId?: string;
 }
 
@@ -30,8 +28,12 @@ export default function TransactionHistory() {
 
       setLoading(true);
       try {
-        const history = await getTransactionHistory(address);
-        setTransactions(history);
+        const response = await fetch(`http://localhost:5500/api/transactions/user/${address}`);
+        if (!response.ok) {
+          throw new Error('Failed to fetch transactions');
+        }
+        const data = await response.json();
+        setTransactions(data);
         setError(null);
       } catch (err) {
         console.error("Error fetching transaction history:", err);
@@ -43,8 +45,8 @@ export default function TransactionHistory() {
 
     fetchTransactions();
 
-    // Set up polling to refresh transactions every 30 seconds
-    const interval = setInterval(fetchTransactions, 30000);
+    // Set up polling to refresh transactions every 10 seconds
+    const interval = setInterval(fetchTransactions, 10000);
 
     return () => clearInterval(interval);
   }, [address]);
@@ -98,7 +100,7 @@ export default function TransactionHistory() {
                 <div className="flex justify-between items-start">
                   <div>
                     <div className="flex items-center gap-2">
-                      <span className={`px-2 py-1 rounded text-xs ${tx.status === 'confirmed' ? 'bg-green-500/20 text-green-400' :
+                      <span className={`px-2 py-1 rounded text-xs ${tx.status === 'verified' ? 'bg-green-500/20 text-green-400' :
                         tx.status === 'pending' ? 'bg-yellow-500/20 text-yellow-400' :
                           tx.status === 'rejected' ? 'bg-red-500/20 text-red-400' :
                             'bg-gray-500/20 text-gray-400'
@@ -122,7 +124,7 @@ export default function TransactionHistory() {
                         Amount: <span className="text-white">{tx.value} ETH</span>
                       </div>
                       <div className="text-white/70 text-xs">
-                        {formatDistanceToNow(new Date(tx.timestamp * 1000), { addSuffix: true })}
+                        {formatDistanceToNow(new Date(tx.createdAt * 1000), { addSuffix: true })}
                       </div>
                     </div>
                   </div>

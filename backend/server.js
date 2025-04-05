@@ -1,12 +1,21 @@
-const express = require('express');
-const cors = require('cors');
-const { ethers } = require('ethers');
-const { PrismaClient } = require('@prisma/client');
-const { v4: uuidv4 } = require('uuid');
-const MerkleTree = require('./merkleTree');
+import express from 'express';
+import cors from 'cors';
+import { ethers } from 'ethers';
+import { PrismaClient } from '@prisma/client';
+import { v4 as uuidv4 } from 'uuid';
+import MerkleTree from './merkleTree.js';
+import * as rollup from './rollup.js';
+import dotenv from 'dotenv';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+dotenv.config({ path: join(__dirname, '../.env') });
+
 const app = express();
 const PORT = 5500;
-require('dotenv').config({ path: '../.env' });
 
 const prisma = new PrismaClient();
 
@@ -219,16 +228,14 @@ const adminAuth = async (req, res, next) => {
 // Get all batches
 app.get('/api/batches', async (req, res) => {
   try {
-    // Get batches from database with their transactions
     const batches = await prisma.batch.findMany({
+      orderBy: {
+        createdAt: 'desc'
+      },
       include: {
         transactions: true
-      },
-      orderBy: {
-        timestamp: 'desc'
       }
     });
-
     res.json(batches);
   } catch (error) {
     console.error('Error fetching batches:', error);
@@ -239,9 +246,9 @@ app.get('/api/batches', async (req, res) => {
 // Store batch in database
 app.post('/api/batches', async (req, res) => {
   try {
-    const { batchId, transactionsRoot, timestamp, transactions } = req.body;
+    const { batchId, transactionsRoot, transactions } = req.body;
 
-    if (!batchId || !transactionsRoot || !timestamp) {
+    if (!batchId || !transactionsRoot) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
@@ -252,14 +259,12 @@ app.post('/api/batches', async (req, res) => {
       where: { batchId },
       update: {
         transactionsRoot,
-        timestamp: new Date(Number(timestamp) * 1000),
         verified: false,
         finalized: false
       },
       create: {
         batchId,
         transactionsRoot,
-        timestamp: new Date(Number(timestamp) * 1000),
         verified: false,
         finalized: false
       }
@@ -274,8 +279,7 @@ app.post('/api/batches', async (req, res) => {
             id: txId
           },
           update: {
-            status: tx.status || 'pending',
-            timestamp: new Date(Number(tx.timestamp) * 1000)
+            status: tx.status || 'pending'
           },
           create: {
             id: txId,
@@ -283,7 +287,6 @@ app.post('/api/batches', async (req, res) => {
             to: tx.to,
             value: tx.value.toString(), // Ensure value is stored as string
             status: tx.status || 'pending',
-            timestamp: new Date(Number(tx.timestamp) * 1000),
             batchId: batch.id
           }
         });
@@ -340,63 +343,89 @@ app.post('/api/batches/verify', adminAuth, async (req, res) => {
       where: { id: batchId },
       data: {
         verified: true,
-        finalized: false
+        finalized: false,
+        rejected: false
       },
       include: { transactions: true }
     });
 
-    // Update transaction statuses to verified and adjust L2 balances
+    // Update transaction statuses to verified
+    await prisma.batchTransaction.updateMany({
+      where: { batchId: batch.id },
+      data: { status: 'verified' }
+    });
+
+    // Update L2 balances for each transaction
     for (const tx of batch.transactions) {
-      // Update transaction status
-      await prisma.batchTransaction.update({
-        where: { id: tx.id },
-        data: { status: 'verified' }
-      });
-
-      // Adjust L2 balances
-      const fromUser = await prisma.user.findUnique({
-        where: { address: tx.fromAddress }
-      });
-
-      const toUser = await prisma.user.findUnique({
-        where: { address: tx.toAddress }
-      });
-
-      if (fromUser) {
-        await prisma.user.update({
-          where: { id: fromUser.id },
-          data: {
-            l2Balance: {
-              decrement: BigInt(tx.value)
-            }
+      // Update sender's balance
+      const senderBalance = await prisma.layer2Balance.findUnique({
+        where: {
+          userAddress_contractAddress: {
+            userAddress: tx.from.toLowerCase(),
+            contractAddress: activeDeployment.address
           }
+        }
+      });
+
+      if (senderBalance) {
+        const newSenderBalance = (BigInt(senderBalance.balance) - BigInt(tx.value)).toString();
+        await prisma.layer2Balance.update({
+          where: {
+            userAddress_contractAddress: {
+              userAddress: tx.from.toLowerCase(),
+              contractAddress: activeDeployment.address
+            }
+          },
+          data: { balance: newSenderBalance }
         });
       }
 
-      if (toUser) {
-        await prisma.user.update({
-          where: { id: toUser.id },
-          data: {
-            l2Balance: {
-              increment: BigInt(tx.value)
+      // Update recipient's balance
+      const recipientBalance = await prisma.layer2Balance.findUnique({
+        where: {
+          userAddress_contractAddress: {
+            userAddress: tx.to.toLowerCase(),
+            contractAddress: activeDeployment.address
+          }
+        }
+      });
+
+      if (recipientBalance) {
+        const newRecipientBalance = (BigInt(recipientBalance.balance) + BigInt(tx.value)).toString();
+        await prisma.layer2Balance.update({
+          where: {
+            userAddress_contractAddress: {
+              userAddress: tx.to.toLowerCase(),
+              contractAddress: activeDeployment.address
             }
+          },
+          data: { balance: newRecipientBalance }
+        });
+      } else {
+        // Create new balance record for recipient
+        await prisma.layer2Balance.create({
+          data: {
+            userAddress: tx.to.toLowerCase(),
+            contractAddress: activeDeployment.address,
+            balance: tx.value
           }
         });
       }
     }
 
-    res.json({
+    return res.json({
+      success: true,
       message: 'Batch verified successfully',
       batch: updatedBatch
     });
   } catch (error) {
     console.error('Error verifying batch:', error);
-    res.status(500).json({ error: 'Failed to verify batch' });
+    return res.status(500).json({ error: 'Failed to verify batch' });
   }
 });
 
 // Reject a batch
-app.post('/api/batches/reject', adminAuth, async (req, res) => {
+app.post('/api/batches/reject', async (req, res) => {
   try {
     const { batchId } = req.body;
     if (!batchId) {
@@ -405,34 +434,39 @@ app.post('/api/batches/reject', adminAuth, async (req, res) => {
 
     // Find the batch in the database
     const batch = await prisma.batch.findUnique({
-      where: { id: batchId },
-      include: { transactions: true }
+      where: { id: batchId }
     });
 
     if (!batch) {
       return res.status(404).json({ error: 'Batch not found' });
     }
 
-    // Update batch status to rejected
-    // Use the fields that are available in the schema
-    const updatedBatch = await prisma.batch.update({
-      where: { id: batchId },
-      data: {
-        verified: false,
-        finalized: false
-        // Note: 'rejected' is not a field in the schema
-        // We're using verified: false to indicate rejection
-      },
-      include: { transactions: true }
-    });
-
-    // Update transaction statuses to rejected
-    for (const tx of batch.transactions) {
-      await prisma.batchTransaction.update({
-        where: { id: tx.id },
-        data: { status: 'rejected' }
+    // Update the batch status to rejected
+    const updatedBatch = await prisma.$transaction(async (prisma) => {
+      // First update the batch
+      const batch = await prisma.batch.update({
+        where: { id: batchId },
+        data: {
+          verified: false,
+          finalized: false,
+          rejected: true
+        }
       });
-    }
+
+      // Then update all associated transactions
+      await prisma.batchTransaction.updateMany({
+        where: {
+          batch: {
+            id: batchId
+          }
+        },
+        data: {
+          status: 'rejected'
+        }
+      });
+
+      return batch;
+    });
 
     res.json({
       message: 'Batch rejected successfully',
@@ -516,16 +550,20 @@ app.post('/api/transactions', async (req, res) => {
       // Generate a unique batch ID
       const batchId = uuidv4();
 
-      // Create the batch first with a temporary transactions root
+      // Create the batch first
       const batch = await prisma.batch.create({
         data: {
-          batchId,
+          batchId: batchId,
           transactionsRoot: '0x0000000000000000000000000000000000000000000000000000000000000000', // Temporary
-          timestamp: new Date(),
           verified: false,
-          finalized: false
+          finalized: false,
+          rejected: false,
+          createdAt: new Date(),
+          updatedAt: new Date()
         }
       });
+
+      console.log('Created batch:', batch);
 
       // Then create the batch transactions
       const batchTransactions = await Promise.all(
@@ -536,12 +574,15 @@ app.post('/api/transactions', async (req, res) => {
               to: tx.to.toLowerCase(),
               value: tx.amount.toString(),
               status: 'pending',
-              timestamp: new Date(tx.timestamp * 1000),
-              batchId: batch.id // Link to the batch using the batch's ID
+              batchId: batch.id,
+              createdAt: new Date(),
+              updatedAt: new Date()
             }
           })
         )
       );
+
+      console.log('Created batch transactions:', batchTransactions);
 
       // Calculate merkle root from the saved transactions
       const transactionsRoot = ethers.utils.keccak256(
@@ -784,15 +825,29 @@ app.get('/api/balance/:address', async (req, res) => {
 // Get pending transactions
 app.get('/api/transactions/pending', async (req, res) => {
   try {
-    // Filter transactions with "pending" status
-    const pendingTxs = transactions.filter(tx => tx.status === "pending");
+    const pendingTransactions = await prisma.transaction.findMany({
+      where: {
+        status: 'pending'
+      },
+      orderBy: {
+        timestamp: 'asc'
+      },
+      select: {
+        id: true,
+        sender: true,
+        recipient: true,
+        amount: true,
+        status: true,
+        timestamp: true
+      }
+    });
 
-    if (pendingTxs.length > 0) {
-      return res.json(pendingTxs);
-    } else {
-      // Return empty array if no pending transactions
-      return res.json([]);
-    }
+    const formattedTransactions = pendingTransactions.map(tx => ({
+      ...tx,
+      timestamp: tx.timestamp.toISOString()
+    }));
+
+    return res.status(200).json(formattedTransactions);
   } catch (error) {
     console.error('Error fetching pending transactions:', error);
     return res.status(500).json({ error: 'Failed to fetch pending transactions' });
@@ -856,50 +911,42 @@ app.post('/api/balance/update', async (req, res) => {
 const getMockBatches = () => {
   return [
     {
-      id: "1",
-      transactionsRoot: "0x123...",
-      transactions: [
-        { sender: "0x123...", recipient: "0x456...", amount: "0.1" },
-        { sender: "0x789...", recipient: "0xabc...", amount: "0.2" },
-      ],
+      id: '1',
+      batchId: '1',
+      transactionsRoot: '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef',
+      status: 'pending',
       timestamp: new Date().toISOString(),
-      verified: true,
-      finalized: false,
+      size: 5
     },
     {
-      id: "2",
-      transactionsRoot: "0x456...",
-      transactions: [
-        { sender: "0xdef...", recipient: "0xghi...", amount: "0.3" },
-      ],
+      id: '2',
+      batchId: '2',
+      transactionsRoot: '0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
+      status: 'verified',
       timestamp: new Date().toISOString(),
-      verified: false,
-      finalized: false,
-    },
+      size: 3
+    }
   ];
 };
 
 const getMockTransactionStatus = (address) => {
   return [
     {
-      id: "tx1",
-      status: "confirmed",
-      hash: "0x123...",
+      hash: '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef',
       from: address,
-      to: "0x456...",
-      amount: "0.1",
-      timestamp: new Date().toISOString(),
-      batchId: "1",
+      to: '0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
+      value: '1000000000000000000',
+      status: 'pending',
+      timestamp: new Date().toISOString()
     },
     {
-      id: "tx2",
-      status: "pending",
-      hash: "0x789...",
-      from: address,
-      to: "0xabc...",
-      amount: "0.2",
-      timestamp: new Date().toISOString(),
-    },
+      hash: '0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
+      from: '0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
+      to: address,
+      value: '500000000000000000',
+      status: 'completed',
+      timestamp: new Date().toISOString()
+    }
   ];
 };
 
@@ -909,7 +956,7 @@ app.get('/api/transactions/live', async (req, res) => {
     // Get recent transactions from the database
     const recentTransactions = await prisma.batchTransaction.findMany({
       orderBy: {
-        timestamp: 'desc'
+        createdAt: 'desc'
       },
       take: 20, // Limit to 20 most recent transactions
       include: {
@@ -924,7 +971,7 @@ app.get('/api/transactions/live', async (req, res) => {
       to: tx.to,
       value: tx.value,
       status: tx.status,
-      timestamp: Math.floor(new Date(tx.timestamp).getTime() / 1000),
+      createdAt: Math.floor(new Date(tx.createdAt).getTime() / 1000),
       batchId: tx.batch?.batchId
     }));
 
@@ -938,29 +985,45 @@ app.get('/api/transactions/live', async (req, res) => {
 // Get all network transactions
 app.get('/api/transactions/network', async (req, res) => {
   try {
-    // Get all transactions from the database, ordered by timestamp
+    // Get all transactions from the database, ordered by createdAt
     const transactions = await prisma.batchTransaction.findMany({
       orderBy: {
-        timestamp: 'desc'
+        createdAt: 'desc'
       },
       include: {
-        batch: true // Include the associated batch information
-      },
-      take: 50 // Limit to 50 most recent transactions
+        batch: true
+      }
     });
 
     // Format transactions for the frontend
-    const formattedTransactions = transactions.map(tx => ({
-      hash: tx.id,
-      from: tx.from,
-      to: tx.to,
-      value: tx.value,
-      status: tx.batch?.verified ? 'verified' : tx.batch?.finalized ? 'finalized' : 'pending',
-      timestamp: Math.floor(new Date(tx.timestamp).getTime() / 1000),
-      batchId: tx.batch?.batchId || null,
-      type: tx.type || 'transfer',
-      isInBatch: !!tx.batch
-    }));
+    const formattedTransactions = transactions.map(tx => {
+      try {
+        return {
+          hash: tx.id,
+          from: tx.from,
+          to: tx.to,
+          value: tx.value,
+          status: tx.batch ? (tx.batch.verified ? 'verified' : tx.batch.finalized ? 'finalized' : tx.batch.rejected ? 'rejected' : 'pending') : 'pending',
+          createdAt: Math.floor(new Date(tx.createdAt).getTime() / 1000),
+          batchId: tx.batch?.batchId || null,
+          type: tx.type || 'transfer',
+          isInBatch: !!tx.batch
+        };
+      } catch (err) {
+        console.error('Error formatting transaction:', err);
+        return {
+          hash: tx.id,
+          from: tx.from,
+          to: tx.to,
+          value: tx.value,
+          status: 'pending',
+          createdAt: Math.floor(new Date(tx.createdAt).getTime() / 1000),
+          batchId: null,
+          type: 'transfer',
+          isInBatch: false
+        };
+      }
+    });
 
     res.json(formattedTransactions);
   } catch (error) {
@@ -971,47 +1034,60 @@ app.get('/api/transactions/network', async (req, res) => {
 
 // Get user transaction history
 app.get('/api/transactions/user/:address', async (req, res) => {
-  const { address } = req.params;
-
-  if (!address) {
-    return res.status(400).json({ error: 'Address is required' });
-  }
-
   try {
-    // Get transactions where the address is either the sender or receiver
+    const { address } = req.params;
+    if (!address) {
+      return res.status(400).json({ error: 'Address is required' });
+    }
+
     const transactions = await prisma.batchTransaction.findMany({
       where: {
         OR: [
-          { from: address.toLowerCase() },
-          { to: address.toLowerCase() }
+          { from: address },
+          { to: address }
         ]
       },
       include: {
         batch: true
       },
       orderBy: {
-        timestamp: 'desc'
-      },
-      take: 20
+        createdAt: 'desc'
+      }
     });
 
-    // Format transactions for the frontend
-    const formattedTransactions = transactions.map(tx => ({
-      hash: tx.id,
-      from: tx.from,
-      to: tx.to,
-      value: tx.value,
-      status: tx.batch?.verified ? 'verified' : tx.batch?.finalized ? 'finalized' : 'pending',
-      timestamp: Math.floor(new Date(tx.timestamp).getTime() / 1000),
-      batchId: tx.batch?.batchId || null,
-      type: tx.type || 'transfer',
-      isInBatch: !!tx.batch
-    }));
+    const formattedTransactions = transactions.map(tx => {
+      try {
+        return {
+          hash: tx.id,
+          from: tx.from,
+          to: tx.to,
+          value: tx.value,
+          status: tx.batch ? (tx.batch.verified ? 'verified' : tx.batch.finalized ? 'finalized' : tx.batch.rejected ? 'rejected' : 'pending') : 'pending',
+          createdAt: Math.floor(new Date(tx.createdAt).getTime() / 1000),
+          batchId: tx.batch?.batchId || null,
+          type: tx.type || 'transfer',
+          isInBatch: !!tx.batch
+        };
+      } catch (err) {
+        console.error('Error formatting transaction:', err);
+        return {
+          hash: tx.id,
+          from: tx.from,
+          to: tx.to,
+          value: tx.value,
+          status: 'pending',
+          createdAt: Math.floor(new Date(tx.createdAt).getTime() / 1000),
+          batchId: null,
+          type: 'transfer',
+          isInBatch: false
+        };
+      }
+    });
 
     res.json(formattedTransactions);
   } catch (error) {
-    console.error('Error fetching user transaction history:', error);
-    res.status(500).json({ error: 'Failed to fetch user transaction history' });
+    console.error('Error fetching user transactions:', error);
+    res.status(500).json({ error: 'Failed to fetch user transactions' });
   }
 });
 
@@ -1094,41 +1170,14 @@ app.get('/api/admin/check', async (req, res) => {
 // Get operators
 app.get('/api/operators', async (req, res) => {
   try {
-    let operators = [];
-
-    // Try to get operators from database
-    try {
-      operators = await prisma.operator.findMany({
-        orderBy: {
-          createdAt: 'desc'
-        }
-      });
-    } catch (dbError) {
-      console.warn('Database error:', dbError);
-      // Fallback to hardcoded operators for development
-      operators = [
-        { address: '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266', isActive: true },
-        { address: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8', isActive: true },
-        { address: '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC', isActive: true }
-      ];
-    }
-
-    // Try to verify operator status on-chain
-    if (contract) {
-      operators = await Promise.all(operators.map(async (operator) => {
-        try {
-          const isActive = await contract.isOperator(operator.address);
-          return { ...operator, isActive };
-        } catch (err) {
-          console.warn(`Failed to verify operator status for ${operator.address}:`, err);
-          return operator;
-        }
-      }));
-    }
-
+    const operators = await prisma.operator.findMany({
+      orderBy: {
+        createdAt: 'desc'
+      }
+    });
     res.json(operators);
   } catch (error) {
-    console.error('Error in /api/operators:', error);
+    console.error('Error fetching operators:', error);
     res.status(500).json({ error: 'Failed to fetch operators' });
   }
 });
@@ -1222,6 +1271,296 @@ app.post('/api/batches/update-balances', adminAuth, async (req, res) => {
   } catch (error) {
     console.error('Error updating balances:', error);
     return res.status(500).json({ error: 'Failed to update balances' });
+  }
+});
+
+// Challenge a batch
+app.post('/api/batches/challenge', async (req, res) => {
+  try {
+    const { batchId, challengerAddress } = req.body;
+    if (!batchId || !challengerAddress) {
+      return res.status(400).json({ error: 'Batch ID and challenger address are required' });
+    }
+
+    // Find the batch in the database
+    const batch = await prisma.batch.findUnique({
+      where: { id: batchId },
+      include: { transactions: true }
+    });
+
+    if (!batch) {
+      return res.status(404).json({ error: 'Batch not found' });
+    }
+
+    if (!batch.verified || batch.finalized || batch.rejected) {
+      return res.status(400).json({ error: 'Batch cannot be challenged in its current state' });
+    }
+
+    // Create a challenge record
+    const challenge = await prisma.batchChallenge.create({
+      data: {
+        batchId: batch.id,
+        challengerAddress: challengerAddress.toLowerCase(),
+        status: 'pending',
+        timestamp: new Date()
+      }
+    });
+
+    res.json({
+      message: 'Challenge submitted successfully',
+      challenge
+    });
+  } catch (error) {
+    console.error('Error submitting challenge:', error);
+    res.status(500).json({ error: 'Failed to submit challenge' });
+  }
+});
+
+// Verify a challenge
+app.post('/api/batches/verify-challenge', adminAuth, async (req, res) => {
+  try {
+    const { batchId, isValid, adminAddress } = req.body;
+    if (!batchId || typeof isValid !== 'boolean') {
+      return res.status(400).json({ error: 'Batch ID and validity status are required' });
+    }
+
+    // Find the challenge
+    const challenge = await prisma.batchChallenge.findFirst({
+      where: {
+        batchId,
+        status: 'pending'
+      },
+      include: {
+        batch: true
+      }
+    });
+
+    if (!challenge) {
+      return res.status(404).json({ error: 'Challenge not found' });
+    }
+
+    const PENALTY_AMOUNT = '10000000000000000000'; // 10 ETH penalty
+
+    if (isValid) {
+      // Challenge is valid - penalize batch creator
+      // Update batch creator's balances
+      const batchCreator = await prisma.user.findFirst({
+        where: { address: challenge.batch.creatorAddress }
+      });
+
+      if (batchCreator) {
+        // Deduct from L2 balance first
+        const l2Balance = BigInt(batchCreator.l2Balance || '0');
+        const penalty = BigInt(PENALTY_AMOUNT);
+
+        if (l2Balance >= penalty) {
+          await prisma.user.update({
+            where: { id: batchCreator.id },
+            data: {
+              l2Balance: (l2Balance - penalty).toString()
+            }
+          });
+        } else {
+          // If L2 balance is insufficient, deduct from L1 balance
+          const l1Balance = BigInt(batchCreator.l1Balance || '0');
+          await prisma.user.update({
+            where: { id: batchCreator.id },
+            data: {
+              l2Balance: '0',
+              l1Balance: (l1Balance - (penalty - l2Balance)).toString()
+            }
+          });
+        }
+      }
+
+      // Update batch status
+      await prisma.batch.update({
+        where: { id: batchId },
+        data: {
+          rejected: true,
+          verified: false,
+          finalized: false
+        }
+      });
+    } else {
+      // Challenge is invalid - penalize challenger
+      const challenger = await prisma.user.findFirst({
+        where: { address: challenge.challengerAddress }
+      });
+
+      if (challenger) {
+        const l2Balance = BigInt(challenger.l2Balance || '0');
+        const penalty = BigInt(PENALTY_AMOUNT);
+
+        if (l2Balance >= penalty) {
+          await prisma.user.update({
+            where: { id: challenger.id },
+            data: {
+              l2Balance: (l2Balance - penalty).toString()
+            }
+          });
+        } else {
+          const l1Balance = BigInt(challenger.l1Balance || '0');
+          await prisma.user.update({
+            where: { id: challenger.id },
+            data: {
+              l2Balance: '0',
+              l1Balance: (l1Balance - (penalty - l2Balance)).toString()
+            }
+          });
+        }
+      }
+    }
+
+    // Update challenge status
+    await prisma.batchChallenge.update({
+      where: { id: challenge.id },
+      data: {
+        status: isValid ? 'accepted' : 'rejected',
+        resolvedBy: adminAddress.toLowerCase(),
+        resolvedAt: new Date()
+      }
+    });
+
+    res.json({
+      message: isValid ? 'Challenge verified as valid' : 'Challenge rejected',
+      challenge
+    });
+  } catch (error) {
+    console.error('Error verifying challenge:', error);
+    res.status(500).json({ error: 'Failed to verify challenge' });
+  }
+});
+
+// Rollup API endpoints
+app.post('/api/rollup/batch/create', async (req, res) => {
+  try {
+    const result = await rollup.createBatch();
+    res.json(result);
+  } catch (error) {
+    console.error('Error creating batch:', error);
+    res.status(500).json({ error: 'Failed to create batch' });
+  }
+});
+
+app.post('/api/rollup/batch/verify', async (req, res) => {
+  try {
+    const { batchId } = req.body;
+    if (!batchId) {
+      return res.status(400).json({ error: 'Batch ID is required' });
+    }
+
+    const result = await rollup.verifyBatch(batchId);
+    res.json(result);
+  } catch (error) {
+    console.error('Error verifying batch:', error);
+    res.status(500).json({ error: 'Failed to verify batch' });
+  }
+});
+
+app.post('/api/rollup/batch/finalize', async (req, res) => {
+  try {
+    const { batchId } = req.body;
+    if (!batchId) {
+      return res.status(400).json({ error: 'Batch ID is required' });
+    }
+
+    const result = await rollup.finalizeBatch(batchId);
+    res.json(result);
+  } catch (error) {
+    console.error('Error finalizing batch:', error);
+    res.status(500).json({ error: 'Failed to finalize batch' });
+  }
+});
+
+app.post('/api/rollup/fraud-proof', async (req, res) => {
+  try {
+    const { batchId, challengerAddress, fraudProof } = req.body;
+    if (!batchId || !challengerAddress || !fraudProof) {
+      return res.status(400).json({ error: 'Batch ID, challenger address, and fraud proof are required' });
+    }
+
+    const result = await rollup.submitFraudProof(batchId, challengerAddress, fraudProof);
+    res.json(result);
+  } catch (error) {
+    console.error('Error submitting fraud proof:', error);
+    res.status(500).json({ error: 'Failed to submit fraud proof' });
+  }
+});
+
+// Admin API endpoints
+app.get('/api/admin/operators', async (req, res) => {
+  try {
+    // For now, return mock data
+    const operators = [
+      { id: '1', address: '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266', isActive: true },
+      { id: '2', address: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8', isActive: true }
+    ];
+    res.json(operators);
+  } catch (error) {
+    console.error('Error fetching operators:', error);
+    res.status(500).json({ error: 'Failed to fetch operators' });
+  }
+});
+
+app.post('/api/admin/operators', async (req, res) => {
+  try {
+    const { address } = req.body;
+    if (!address) {
+      return res.status(400).json({ error: 'Address is required' });
+    }
+
+    // In a real implementation, you would add the operator to the database
+    // For now, just return success
+    res.json({ success: true, message: 'Operator added successfully' });
+  } catch (error) {
+    console.error('Error adding operator:', error);
+    res.status(500).json({ error: 'Failed to add operator' });
+  }
+});
+
+app.delete('/api/admin/operators/:address', async (req, res) => {
+  try {
+    const { address } = req.params;
+    if (!address) {
+      return res.status(400).json({ error: 'Address is required' });
+    }
+
+    // In a real implementation, you would remove the operator from the database
+    // For now, just return success
+    res.json({ success: true, message: 'Operator removed successfully' });
+  } catch (error) {
+    console.error('Error removing operator:', error);
+    res.status(500).json({ error: 'Failed to remove operator' });
+  }
+});
+
+app.get('/api/admin/contracts', async (req, res) => {
+  try {
+    // For now, return mock data
+    const contracts = [
+      { id: '1', address: '0x5FbDB2315678afecb367f032d93F642f64180aa3', network: 'localhost', isActive: true }
+    ];
+    res.json(contracts);
+  } catch (error) {
+    console.error('Error fetching contracts:', error);
+    res.status(500).json({ error: 'Failed to fetch contracts' });
+  }
+});
+
+app.post('/api/admin/contracts', async (req, res) => {
+  try {
+    const { address, network } = req.body;
+    if (!address || !network) {
+      return res.status(400).json({ error: 'Address and network are required' });
+    }
+
+    // In a real implementation, you would add the contract to the database
+    // For now, just return success
+    res.json({ success: true, message: 'Contract added successfully' });
+  } catch (error) {
+    console.error('Error adding contract:', error);
+    res.status(500).json({ error: 'Failed to add contract' });
   }
 });
 

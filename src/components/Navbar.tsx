@@ -1,10 +1,28 @@
+import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Button } from "@/components/ui/button";
 import { useWallet } from "@/hooks/useWallet";
 import { toast } from "@/components/ui/use-toast";
 
-export default function Navbar() {
+const Navbar: React.FC = () => {
   const { address, isConnected, isConnecting, connect, disconnect } = useWallet();
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  useEffect(() => {
+    const checkAdminStatus = async () => {
+      if (!address) return;
+
+      try {
+        const response = await fetch(`http://localhost:5500/api/admin/check?address=${address}`);
+        const data = await response.json();
+        setIsAdmin(data.isAdmin);
+      } catch (error) {
+        console.error('Error checking admin status:', error);
+      }
+    };
+
+    checkAdminStatus();
+  }, [address]);
 
   const handleConnect = async () => {
     try {
@@ -39,17 +57,31 @@ export default function Navbar() {
                   Transactions
                 </Link>
                 <Link
+                  to="/batches"
+                  className="text-white/70 hover:text-white transition-colors duration-200"
+                >
+                  Batches
+                </Link>
+                <Link
                   to="/withdraw"
                   className="text-white/70 hover:text-white transition-colors duration-200"
                 >
                   Withdraw
                 </Link>
                 <Link
-                  to="/admin"
+                  to="/fraud-proof"
                   className="text-white/70 hover:text-white transition-colors duration-200"
                 >
-                  Admin
+                  Fraud Proof
                 </Link>
+                {isAdmin && (
+                  <Link
+                    to="/admin"
+                    className="text-white/70 hover:text-white transition-colors duration-200"
+                  >
+                    Admin
+                  </Link>
+                )}
               </div>
             )}
           </div>
@@ -81,4 +113,6 @@ export default function Navbar() {
       </div>
     </nav>
   );
-}
+};
+
+export default Navbar;

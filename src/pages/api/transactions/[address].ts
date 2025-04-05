@@ -15,15 +15,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
 
         // Get all transactions where the address is either sender or recipient
-        const transactions = await prisma.transaction.findMany({
+        const transactions = await prisma.batchTransaction.findMany({
             where: {
                 OR: [
-                    { from: address.toLowerCase() },
-                    { to: address.toLowerCase() }
+                    { from: address },
+                    { to: address }
                 ]
             },
             orderBy: {
-                timestamp: 'desc'
+                createdAt: 'desc'
+            },
+            include: {
+                batch: true
             }
         });
 

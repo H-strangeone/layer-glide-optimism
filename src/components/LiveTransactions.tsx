@@ -11,7 +11,7 @@ interface Transaction {
     to: string;
     value: string;
     status: string;
-    timestamp: number;
+    createdAt: number;
     batchId?: string;
 }
 
@@ -96,9 +96,9 @@ export default function LiveTransactions() {
                                     <div>
                                         <div className="flex items-center gap-2">
                                             <span className={`px-2 py-1 rounded text-xs ${tx.status === 'confirmed' ? 'bg-green-500/20 text-green-400' :
-                                                    tx.status === 'pending' ? 'bg-yellow-500/20 text-yellow-400' :
-                                                        tx.status === 'rejected' ? 'bg-red-500/20 text-red-400' :
-                                                            'bg-gray-500/20 text-gray-400'
+                                                tx.status === 'pending' ? 'bg-yellow-500/20 text-yellow-400' :
+                                                    tx.status === 'rejected' ? 'bg-red-500/20 text-red-400' :
+                                                        'bg-gray-500/20 text-gray-400'
                                                 }`}>
                                                 {tx.status}
                                             </span>
@@ -119,7 +119,7 @@ export default function LiveTransactions() {
                                                 Amount: <span className="text-white">{tx.value} ETH</span>
                                             </div>
                                             <div className="text-white/70 text-xs">
-                                                {formatDistanceToNow(new Date(tx.timestamp * 1000), { addSuffix: true })}
+                                                {formatDistanceToNow(new Date(tx.createdAt * 1000), { addSuffix: true })}
                                             </div>
                                         </div>
                                     </div>

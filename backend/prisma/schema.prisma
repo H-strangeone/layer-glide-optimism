@@ -14,7 +14,6 @@ model Batch {
   id                String   @id @default(uuid())
   batchId           String   @unique
   transactionsRoot  String
-  timestamp         DateTime @default(now())
   verified          Boolean  @default(false)
   finalized         Boolean  @default(false)
   rejected          Boolean  @default(false)
@@ -30,9 +29,8 @@ model BatchTransaction {
   to        String
   value     String
   status    String   @default("pending")
-  timestamp DateTime @default(now())
-  batchId   String
-  batch     Batch    @relation(fields: [batchId], references: [batchId])
+  batchId   String?
+  batch     Batch?   @relation(fields: [batchId], references: [id])
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -55,4 +53,22 @@ model ContractDeployment {
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model Operator {
+  id        String   @id @default(uuid())
+  address   String   @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Balance {
+  id            String   @id @default(uuid())
+  address       String   @unique
+  layer1Balance String
+  layer2Balance String
+  lastUpdated   DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 } 
