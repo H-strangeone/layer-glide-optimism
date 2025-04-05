@@ -179,7 +179,7 @@ export default function AdminBatchManager({ isAdmin }: AdminBatchManagerProps) {
 
         setIsLoading(true);
         try {
-            await verifyBatch(parseInt(batchId));
+            await verifyBatch(batchId);
             toast({
                 title: "Success",
                 description: "Batch verified successfully",

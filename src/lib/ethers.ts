@@ -389,10 +389,12 @@ export const submitBatchWithMerkleRoot = async (merkleRoot: string) => {
 };
 
 // Verify a batch
-export const verifyBatch = async (batchId: number) => {
+export const verifyBatch = async (batchId: string) => {
   try {
     const contract = await getContract();
-    const tx = await contract.verifyBatch(batchId);
+    // Convert the string batchId to a numeric hash
+    const numericBatchId = parseInt(ethers.keccak256(ethers.toUtf8Bytes(batchId)).slice(0, 8), 16);
+    const tx = await contract.verifyBatch(numericBatchId);
     await tx.wait();
     toast({
       title: "Success",
