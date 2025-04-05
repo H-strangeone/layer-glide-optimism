@@ -10,6 +10,9 @@
     "lint": "eslint .",
     "preview": "vite preview"
   },
+  "prisma": {
+    "seed": "node ./prisma/seed.js"
+  },
   "dependencies": {
     "@hookform/resolvers": "^3.9.0",
     "@prisma/client": "^6.5.0",

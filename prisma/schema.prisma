@@ -32,38 +32,43 @@ model Layer2Balance {
 }
 
 model Transaction {
-  id              String   @id @default(uuid())
-  hash            String   @unique
-  from            String
-  to              String
-  amount          String
-  type            String
-  layer           String
-  status          String   @default("pending")
-  contractAddress String?
-  batchId         Int?
-  merkleProof     String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id        String   @id @default(uuid())
+  from      String
+  to        String
+  amount    String
+  status    String
+  timestamp DateTime @default(now())
 }
 
 model Balance {
-  id        String   @id @default(cuid())
-  address   String   @unique
-  layer1    String   @default("0")
-  layer2    String   @default("0")
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id          String   @id @default(cuid())
+  address     String   @unique
+  layer1Balance String
+  layer2Balance String
+  lastUpdated DateTime @default(now())
 }
 
 model Batch {
-  id              String   @id @default(uuid())
-  batchId         Int      @unique
+  id              String   @id @default(cuid())
+  batchId         String   @unique // The ID from the smart contract
   transactionsRoot String
-  timestamp       DateTime @default(now())
+  timestamp       DateTime
   verified        Boolean  @default(false)
   finalized       Boolean  @default(false)
-  contractAddress String?
+  transactions    BatchTransaction[]
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+}
+
+model BatchTransaction {
+  id          String   @id @default(cuid())
+  batchId     String
+  from        String
+  to          String
+  value       String
+  status      String
+  timestamp   DateTime
+  batch       Batch    @relation(fields: [batchId], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 } 

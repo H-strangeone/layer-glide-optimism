@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const { ethers } = require('ethers');
 const { PrismaClient } = require('@prisma/client');
+const { v4: uuidv4 } = require('uuid');
 const MerkleTree = require('./merkleTree');
 const app = express();
 const PORT = 5500;
@@ -28,7 +29,7 @@ const CONTRACT_ABI = [
 ];
 
 // Get contract address from .env
-const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS || "0x5FbDB2315678afecb367f032d93F642f64180aa3";
+const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS || "0x5FC8d32690cc91D4c39d9d3abcBD16989F875707";
 
 // Network configuration
 const NETWORK = process.env.NETWORK || 'localhost'; // 'localhost' or 'sepolia'
@@ -41,7 +42,7 @@ let provider;
 let contract;
 
 // Initialize provider and contract
-const initBlockchainConnection = () => {
+const initBlockchainConnection = async () => {
   try {
     if (NETWORK === 'sepolia') {
       console.log('Initializing blockchain connection with Alchemy API (Sepolia)');
@@ -63,14 +64,31 @@ const initBlockchainConnection = () => {
       console.log(`Connected to Sepolia network`);
     } else {
       console.log('Initializing blockchain connection with local Hardhat node');
-      provider = new ethers.providers.JsonRpcProvider("http://localhost:8545");
 
-      // Use the default Hardhat private key for local development
-      const privateKey = process.env.PRIVATE_KEY || "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
-      const wallet = new ethers.Wallet(privateKey, provider);
-      contract = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, wallet);
+      // For local development, try to connect to the Hardhat node
+      try {
+        provider = new ethers.providers.JsonRpcProvider("http://localhost:8545");
 
-      console.log(`Connected to local network`);
+        // Check if the node is running by getting the network
+        const network = await provider.getNetwork();
+        console.log(`Connected to local network: ${network.name} (chainId: ${network.chainId})`);
+
+        // Use the default Hardhat private key for local development
+        const privateKey = process.env.PRIVATE_KEY || "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+        const wallet = new ethers.Wallet(privateKey, provider);
+        contract = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, wallet);
+
+        console.log(`Connected to local network`);
+
+        // For local development, we'll use the database to track state
+        // This ensures persistence even when the node restarts
+        console.log('Using database for state persistence in local development');
+      } catch (error) {
+        console.error('Failed to connect to local Hardhat node:', error);
+        console.log('Continuing with database-only mode for local development');
+        // We'll continue without a blockchain connection in local mode
+        // This allows the app to work with just the database
+      }
     }
 
     console.log(`Contract address: ${CONTRACT_ADDRESS}`);
@@ -82,37 +100,200 @@ const initBlockchainConnection = () => {
 };
 
 // Initialize blockchain connection
-const isConnected = initBlockchainConnection();
+let isConnected = false;
+
+// Initialize blockchain connection asynchronously
+const initializeBlockchain = async () => {
+  isConnected = await initBlockchainConnection();
+  console.log(`Blockchain connection status: ${isConnected ? 'Connected' : 'Not connected'}`);
+};
+
+// Start the initialization
+initializeBlockchain().catch(err => {
+  console.error('Failed to initialize blockchain connection:', err);
+});
+
+// Admin authentication middleware
+const adminAuth = async (req, res, next) => {
+  try {
+    const adminAddress = req.headers['x-admin-address'];
+
+    if (!adminAddress) {
+      return res.status(401).json({ error: 'Admin address is required' });
+    }
+
+    const expectedAdminAddress = process.env.ADMIN_ADDRESS;
+
+    if (!expectedAdminAddress) {
+      console.error('ADMIN_ADDRESS environment variable is not set');
+      return res.status(500).json({ error: 'Admin configuration error' });
+    }
+
+    if (adminAddress.toLowerCase() !== expectedAdminAddress.toLowerCase()) {
+      return res.status(403).json({ error: 'Unauthorized: Admin privileges required' });
+    }
+
+    next();
+  } catch (err) {
+    console.error('Error in admin authentication:', err);
+    return res.status(500).json({ error: 'Authentication error' });
+  }
+};
 
 // API Routes
 
 // Get all batches
 app.get('/api/batches', async (req, res) => {
   try {
-    if (!isConnected || !contract) {
-      return res.json(getMockBatches());
-    }
-
     // Fetch batches from the blockchain
-    const nextBatchIdFromContract = await contract.nextBatchId();
-    const fetchedBatches = [];
+    if (isConnected && contract) {
+      const nextBatchIdFromContract = await contract.nextBatchId();
+      const fetchedBatches = [];
 
-    for (let i = 1; i < Number(nextBatchIdFromContract); i++) {
-      const batch = await contract.batches(i);
-      fetchedBatches.push({
-        id: batch.batchId.toString(),
-        transactionsRoot: batch.transactionsRoot,
-        timestamp: new Date(Number(batch.timestamp) * 1000).toISOString(),
-        verified: batch.verified,
-        finalized: batch.finalized,
-        transactions: [], // We don't have transactions details from the contract
-      });
+      for (let i = 1; i < Number(nextBatchIdFromContract); i++) {
+        const batch = await contract.batches(i);
+        fetchedBatches.push({
+          batchId: batch.batchId.toString(),
+          transactionsRoot: batch.transactionsRoot,
+          timestamp: new Date(Number(batch.timestamp) * 1000).toISOString(),
+          verified: batch.verified,
+          finalized: batch.finalized,
+        });
+      }
+
+      // Store blockchain batches in database
+      for (const batch of fetchedBatches) {
+        await prisma.batch.upsert({
+          where: { batchId: batch.batchId },
+          update: {
+            transactionsRoot: batch.transactionsRoot,
+            timestamp: new Date(batch.timestamp),
+            verified: batch.verified,
+            finalized: batch.finalized
+          },
+          create: {
+            batchId: batch.batchId,
+            transactionsRoot: batch.transactionsRoot,
+            timestamp: new Date(batch.timestamp),
+            verified: batch.verified,
+            finalized: batch.finalized
+          }
+        });
+      }
     }
 
-    res.json(fetchedBatches.length > 0 ? fetchedBatches : batches);
+    // Fetch all batches from database
+    const dbBatches = await prisma.batch.findMany({
+      include: {
+        transactions: true
+      },
+      orderBy: {
+        timestamp: 'desc'
+      }
+    });
+
+    res.json(dbBatches);
   } catch (error) {
     console.error('Error fetching batches:', error);
-    res.json(getMockBatches());
+    res.status(500).json({ error: 'Failed to fetch batches' });
+  }
+});
+
+// Store batch in database
+app.post('/api/batches', async (req, res) => {
+  try {
+    const { batchId, transactionsRoot, timestamp, transactions } = req.body;
+
+    if (!batchId || !transactionsRoot || !timestamp) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    console.log(`Storing batch ${batchId} in database`);
+
+    // Store batch in database
+    const batch = await prisma.batch.upsert({
+      where: { batchId },
+      update: {
+        transactionsRoot,
+        timestamp: new Date(Number(timestamp) * 1000),
+        verified: false,
+        finalized: false
+      },
+      create: {
+        batchId,
+        transactionsRoot,
+        timestamp: new Date(Number(timestamp) * 1000),
+        verified: false,
+        finalized: false
+      }
+    });
+
+    // Store transactions if provided
+    if (transactions && Array.isArray(transactions) && transactions.length > 0) {
+      for (const tx of transactions) {
+        const txId = `${batch.id}-${tx.from}-${tx.to}-${tx.value}`;
+        await prisma.batchTransaction.upsert({
+          where: {
+            id: txId
+          },
+          update: {
+            status: tx.status || 'pending',
+            timestamp: new Date(Number(tx.timestamp) * 1000)
+          },
+          create: {
+            id: txId,
+            from: tx.from,
+            to: tx.to,
+            value: tx.value.toString(), // Ensure value is stored as string
+            status: tx.status || 'pending',
+            timestamp: new Date(Number(tx.timestamp) * 1000),
+            batchId: batch.id
+          }
+        });
+      }
+    }
+
+    // Submit batch to blockchain if connected
+    if (isConnected && contract) {
+      try {
+        const tx = await contract.submitBatch([transactionsRoot]);
+        const receipt = await tx.wait();
+        console.log(`Batch submitted to blockchain. Transaction hash: ${receipt.transactionHash}`);
+      } catch (error) {
+        console.error('Error submitting batch to blockchain:', error);
+        // Don't throw error here, as the batch is still stored in database
+      }
+    }
+
+    return res.status(201).json(batch);
+  } catch (error) {
+    console.error('Error storing batch in database:', error);
+    return res.status(500).json({ error: 'Failed to store batch in database', details: error.message });
+  }
+});
+
+// Update batch status
+app.put('/api/batches', async (req, res) => {
+  try {
+    const { batchId, verified, finalized } = req.body;
+
+    if (!batchId) {
+      return res.status(400).json({ error: 'Missing batchId' });
+    }
+
+    // Update batch status in database
+    const batch = await prisma.batch.update({
+      where: { batchId },
+      data: {
+        verified: verified !== undefined ? verified : undefined,
+        finalized: finalized !== undefined ? finalized : undefined
+      }
+    });
+
+    return res.status(200).json(batch);
+  } catch (error) {
+    console.error('Error updating batch status:', error);
+    return res.status(500).json({ error: 'Failed to update batch status' });
   }
 });
 
@@ -148,63 +329,99 @@ app.get('/api/batches/:id', async (req, res) => {
   }
 });
 
-// Submit transactions
+// Submit batch transactions
 app.post('/api/transactions', async (req, res) => {
   try {
-    const { transactions: txs } = req.body;
+    const { transactions } = req.body;
+    console.log('Received transactions:', JSON.stringify(transactions, null, 2));
 
-    if (!txs || !Array.isArray(txs) || txs.length === 0) {
-      return res.status(400).json({ error: "Invalid transactions" });
+    if (!transactions || !Array.isArray(transactions) || transactions.length === 0) {
+      return res.status(400).json({ error: 'Invalid transactions data' });
     }
 
-    // Create transaction objects
-    const newTransactions = txs.map(tx => ({
-      id: `tx${nextTxId++}`,
-      sender: tx.sender,
-      recipient: tx.recipient,
-      amount: tx.amount,
-      status: "pending",
-      hash: ethers.utils.id(JSON.stringify(tx)), // Create a determinstic hash
-      timestamp: new Date().toISOString(),
-    }));
+    // Use a transaction to ensure atomicity
+    const result = await prisma.$transaction(async (prisma) => {
+      // Generate a unique batch ID
+      const batchId = uuidv4();
 
-    // Add to transactions list
-    transactions.push(...newTransactions);
+      // Create the batch first with a temporary transactions root
+      const batch = await prisma.batch.create({
+        data: {
+          batchId,
+          transactionsRoot: '0x0000000000000000000000000000000000000000000000000000000000000000', // Temporary
+          timestamp: new Date(),
+          verified: false,
+          finalized: false
+        }
+      });
 
-    // Create a Merkle tree from the transactions
-    const merkleTree = new MerkleTree(txs);
-    const transactionsRoot = merkleTree.getRoot();
+      // Then create the batch transactions
+      const batchTransactions = await Promise.all(
+        transactions.map(tx =>
+          prisma.batchTransaction.create({
+            data: {
+              from: tx.from.toLowerCase(),
+              to: tx.to.toLowerCase(),
+              value: tx.amount.toString(),
+              status: 'pending',
+              timestamp: new Date(tx.timestamp * 1000),
+              batchId: batch.id // Link to the batch using the batch's ID
+            }
+          })
+        )
+      );
 
-    // Create a new batch
-    const batchId = nextBatchId++;
-    const newBatch = {
-      id: batchId.toString(),
-      transactionsRoot,
-      transactions: txs,
-      timestamp: new Date().toISOString(),
-      verified: false,
-      finalized: false,
-      merkleTree: merkleTree,
-    };
+      // Calculate merkle root from the saved transactions
+      const transactionsRoot = ethers.utils.keccak256(
+        ethers.utils.defaultAbiCoder.encode(
+          ['address[]', 'address[]', 'uint256[]'],
+          [
+            batchTransactions.map(tx => tx.from),
+            batchTransactions.map(tx => tx.to),
+            batchTransactions.map(tx => ethers.utils.parseEther(tx.value))
+          ]
+        )
+      );
 
-    // Add to batches list
-    batches.push(newBatch);
+      // Update the batch with the correct transactions root
+      const updatedBatch = await prisma.batch.update({
+        where: { id: batch.id },
+        data: { transactionsRoot },
+        include: { transactions: true }
+      });
+
+      return { batch: updatedBatch, transactions: batchTransactions, transactionsRoot };
+    });
+
+    const { batch, transactions: savedTransactions, transactionsRoot } = result;
+    console.log('Created batch:', JSON.stringify(batch, null, 2));
 
     // Submit batch to the contract if connected
-    if (isConnected && contract && process.env.PRIVATE_KEY) {
+    if (isConnected && contract) {
       try {
         const tx = await contract.submitBatch([transactionsRoot]);
         const receipt = await tx.wait();
         console.log(`Batch submitted to blockchain. Transaction hash: ${receipt.transactionHash}`);
       } catch (error) {
         console.error('Error submitting batch to blockchain:', error);
+        // Continue even if blockchain submission fails - we still have the batch in the database
       }
+    } else {
+      console.log('Blockchain not connected. Batch saved to database only.');
     }
 
-    res.status(201).json({ batchId: newBatch.id });
+    res.status(201).json({
+      batchId: batch.batchId,
+      transactions: savedTransactions,
+      transactionsRoot
+    });
   } catch (error) {
     console.error('Error creating batch:', error);
-    res.status(500).json({ error: "Failed to create batch" });
+    res.status(500).json({
+      error: "Failed to create batch",
+      details: error.message,
+      code: error.code || "UNKNOWN_ERROR"
+    });
   }
 });
 
@@ -297,31 +514,98 @@ app.get('/api/gas-prices', async (req, res) => {
   }
 });
 
-// Check user balance
+// Get balance for an address
 app.get('/api/balance/:address', async (req, res) => {
   const { address } = req.params;
 
+  if (!address) {
+    return res.status(400).json({ error: "Address is required" });
+  }
+
   try {
-    if (!isConnected || !provider || !contract) {
-      return res.json({
-        ethBalance: "1.5",
-        l2Balance: "0.5",
-      });
+    let layer1Balance = "0";
+    let layer2Balance = "0";
+
+    // Try to get balances from blockchain if connected
+    if (isConnected && provider && contract) {
+      try {
+        // Get Ethereum balance
+        const ethBalance = await provider.getBalance(address);
+        layer1Balance = ethers.utils.formatEther(ethBalance);
+
+        // Get Layer 2 balance from contract
+        const l2Balance = await contract.balances(address);
+        layer2Balance = ethers.utils.formatEther(l2Balance);
+
+        console.log(`Fetched balances for ${address}: L1=${layer1Balance}, L2=${layer2Balance}`);
+      } catch (error) {
+        console.error('Error fetching balances from blockchain:', error);
+        // Continue with database values if blockchain fetch fails
+      }
     }
 
-    const ethBalance = await provider.getBalance(address);
-    const l2Balance = await contract.balances(address);
+    // If blockchain values are 0 or we couldn't connect, try to get from database
+    if (layer2Balance === "0") {
+      try {
+        // Get the active contract deployment
+        const activeDeployment = await prisma.contractDeployment.findFirst({
+          where: { isActive: true }
+        });
 
-    res.json({
-      ethBalance: ethers.utils.formatEther(ethBalance),
-      l2Balance: ethers.utils.formatEther(l2Balance),
+        if (activeDeployment) {
+          // Get Layer 2 balance from database
+          const dbBalance = await prisma.layer2Balance.findUnique({
+            where: {
+              userAddress_contractAddress: {
+                userAddress: address.toLowerCase(),
+                contractAddress: activeDeployment.address
+              }
+            }
+          });
+
+          if (dbBalance) {
+            layer2Balance = dbBalance.balance;
+            console.log(`Using database balance for ${address}: ${layer2Balance}`);
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching balance from database:', error);
+      }
+    }
+
+    // Update or create the balance record in the database
+    try {
+      const activeDeployment = await prisma.contractDeployment.findFirst({
+        where: { isActive: true }
+      });
+
+      if (activeDeployment) {
+        await prisma.balance.upsert({
+          where: { address: address.toLowerCase() },
+          update: {
+            layer1Balance,
+            layer2Balance,
+            lastUpdated: new Date()
+          },
+          create: {
+            address: address.toLowerCase(),
+            layer1Balance,
+            layer2Balance,
+            lastUpdated: new Date()
+          }
+        });
+      }
+    } catch (error) {
+      console.error('Error updating balance in database:', error);
+    }
+
+    return res.json({
+      layer1Balance,
+      layer2Balance
     });
   } catch (error) {
     console.error('Error fetching balance:', error);
-    res.json({
-      ethBalance: "1.5",
-      l2Balance: "0.5",
-    });
+    return res.status(500).json({ error: "Failed to fetch balance" });
   }
 });
 
@@ -396,33 +680,105 @@ app.post('/api/balance/update', async (req, res) => {
   }
 });
 
-// Get balance endpoint
-app.get('/api/balance/:address', async (req, res) => {
+// Verify batch endpoint
+app.post('/api/batches/verify', adminAuth, async (req, res) => {
   try {
-    const { address } = req.params;
+    const { batchId } = req.body;
 
-    if (!address) {
-      return res.status(400).json({ error: 'Invalid address' });
+    if (!batchId) {
+      return res.status(400).json({ error: 'Batch ID is required' });
     }
 
-    const latestDeployment = await prisma.contractDeployment.findFirst({
-      where: { isActive: true },
-      include: {
-        balances: {
-          where: { userAddress: address }
-        }
-      },
-      orderBy: { deployedAt: 'desc' }
+    // Find the batch in the database
+    const batch = await prisma.batch.findUnique({
+      where: { batchId },
+      include: { transactions: true }
     });
 
-    if (!latestDeployment?.balances[0]) {
-      return res.status(200).json({ balance: '0' });
+    if (!batch) {
+      return res.status(404).json({ error: 'Batch not found' });
     }
 
-    return res.status(200).json({ balance: latestDeployment.balances[0].balance });
-  } catch (error) {
-    console.error('Error fetching balance:', error);
-    return res.status(500).json({ error: 'Failed to fetch balance' });
+    // Update batch status
+    await prisma.batch.update({
+      where: { batchId },
+      data: { verified: true }
+    });
+
+    // Update transaction statuses
+    await prisma.transaction.updateMany({
+      where: { batchId },
+      data: { status: 'confirmed' }
+    });
+
+    // Update user balances
+    for (const tx of batch.transactions) {
+      // Deduct from sender
+      await prisma.user.update({
+        where: { address: tx.from },
+        data: {
+          balance: {
+            decrement: tx.value
+          }
+        }
+      });
+
+      // Add to recipient
+      await prisma.user.update({
+        where: { address: tx.to },
+        data: {
+          balance: {
+            increment: tx.value
+          }
+        }
+      });
+    }
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('Error verifying batch:', err);
+    return res.status(500).json({ error: 'Failed to verify batch' });
+  }
+});
+
+// Reject batch endpoint
+app.post('/api/batches/reject', adminAuth, async (req, res) => {
+  try {
+    const { batchId, reason } = req.body;
+
+    if (!batchId) {
+      return res.status(400).json({ error: 'Batch ID is required' });
+    }
+
+    // Find the batch in the database
+    const batch = await prisma.batch.findUnique({
+      where: { batchId },
+      include: { transactions: true }
+    });
+
+    if (!batch) {
+      return res.status(404).json({ error: 'Batch not found' });
+    }
+
+    // Update batch status
+    await prisma.batch.update({
+      where: { batchId },
+      data: {
+        rejected: true,
+        rejectionReason: reason || 'Rejected by admin'
+      }
+    });
+
+    // Update transaction statuses
+    await prisma.transaction.updateMany({
+      where: { batchId },
+      data: { status: 'rejected' }
+    });
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('Error rejecting batch:', err);
+    return res.status(500).json({ error: 'Failed to reject batch' });
   }
 });
 
@@ -476,6 +832,107 @@ const getMockTransactionStatus = (address) => {
     },
   ];
 };
+
+// Get live transactions
+app.get('/api/transactions/live', async (req, res) => {
+  try {
+    // Get recent transactions from the database
+    const recentTransactions = await prisma.batchTransaction.findMany({
+      orderBy: {
+        timestamp: 'desc'
+      },
+      take: 20, // Limit to 20 most recent transactions
+      include: {
+        batch: true
+      }
+    });
+
+    // Format transactions for the frontend
+    const formattedTransactions = recentTransactions.map(tx => ({
+      hash: tx.id, // Use the database ID as a hash if no blockchain hash is available
+      from: tx.from,
+      to: tx.to,
+      value: tx.value,
+      status: tx.status,
+      timestamp: Math.floor(new Date(tx.timestamp).getTime() / 1000),
+      batchId: tx.batch?.batchId
+    }));
+
+    return res.json(formattedTransactions);
+  } catch (error) {
+    console.error('Error fetching live transactions:', error);
+    return res.status(500).json({ error: "Failed to fetch live transactions" });
+  }
+});
+
+// Get transaction history for an address
+app.get('/api/transactions', async (req, res) => {
+  const { address } = req.query;
+
+  if (!address) {
+    return res.status(400).json({ error: 'Address is required' });
+  }
+
+  try {
+    // Get transactions where the address is either the sender or receiver
+    const transactions = await prisma.transaction.findMany({
+      where: {
+        OR: [
+          { from: address.toLowerCase() },
+          { to: address.toLowerCase() }
+        ]
+      },
+      orderBy: {
+        timestamp: 'desc'
+      },
+      take: 20
+    });
+
+    // Format transactions for the frontend
+    const formattedTransactions = transactions.map(tx => ({
+      hash: tx.hash,
+      from: tx.from,
+      to: tx.to,
+      value: tx.value,
+      status: tx.status,
+      timestamp: tx.timestamp,
+      batchId: tx.batchId
+    }));
+
+    res.json(formattedTransactions);
+  } catch (error) {
+    console.error('Error fetching transaction history:', error);
+    res.status(500).json({ error: 'Failed to fetch transaction history' });
+  }
+});
+
+// Admin check endpoint
+app.get('/api/admin/check', async (req, res) => {
+  try {
+    const { address } = req.query;
+
+    if (!address) {
+      return res.status(400).json({ error: 'Address is required' });
+    }
+
+    const adminAddress = process.env.ADMIN_ADDRESS;
+
+    if (!adminAddress) {
+      console.error('ADMIN_ADDRESS environment variable is not set');
+      return res.status(500).json({ error: 'Admin configuration error' });
+    }
+
+    const isAdmin = address.toLowerCase() === adminAddress.toLowerCase();
+
+    return res.json({
+      isAdmin,
+      adminAddress: isAdmin ? adminAddress : null
+    });
+  } catch (err) {
+    console.error('Error checking admin status:', err);
+    return res.status(500).json({ error: 'Failed to check admin status' });
+  }
+});
 
 // Start the server
 app.listen(PORT, () => {

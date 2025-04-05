@@ -1,318 +1,225 @@
 import React, { useEffect, useState } from 'react';
-import { useAccount } from 'wagmi';
-import { getTransactionHistory, getGasPrice, TransactionStatus, TransactionHistory, TransactionEvent, TransactionReceipt } from '@/lib/ethers';
-import { formatEther } from 'ethers';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Badge } from "@/components/ui/badge";
-import { getTransactionStatus, subscribeToTransactionEvents } from "@/lib/ethers";
+import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/components/ui/use-toast";
-import { createMerkleTreeFromTransactions } from "@/lib/merkle";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { getTransactionHistory, getLayer2Balance, getLayer1Balance, formatLargeNumber } from '@/lib/ethers';
+import { formatDistanceToNow } from "date-fns";
+import { formatEther } from "ethers";
 
 interface TransactionTrackerProps {
   address?: string;
-  onSuccess?: () => void;
 }
 
-interface Transaction {
-  hash: string;
-  from: string;
-  to: string;
-  value: string;
-  status: string;
-  gasPrice: string;
-  timestamp: number;
-  batchId?: string;
+interface Transaction extends TransactionHistory {
+  type: string;
 }
 
-interface BatchDetails {
-  id: string;
-  transactions: Transaction[];
-  merkleRoot: string;
-  merkleProof?: string[];
-}
-
-export function TransactionTracker({ address, onSuccess }: TransactionTrackerProps) {
+export function TransactionTracker({ address }: TransactionTrackerProps) {
+  const [searchAddress, setSearchAddress] = useState('');
+  const [layer1Balance, setLayer1Balance] = useState<string>("0");
+  const [layer2Balance, setLayer2Balance] = useState<string>("0");
   const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [gasPrice, setGasPrice] = useState<string>('0');
-  const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState("all");
-  const [selectedBatch, setSelectedBatch] = useState<BatchDetails | null>(null);
-  const [showBatchDetails, setShowBatchDetails] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
   const { toast } = useToast();
 
-  const fetchData = async () => {
+  const fetchBalances = async (address: string) => {
+    try {
+      const [l1Balance, l2Balance] = await Promise.all([
+        getLayer1Balance(address),
+        getLayer2Balance(address)
+      ]);
+
+      // Format the balances with proper decimal places and handle NaN
+      const formatBalance = (balance: string) => {
+        const num = Number(balance);
+        return isNaN(num) ? "0.000000" : num.toFixed(6);
+      };
+
+      setLayer1Balance(formatBalance(l1Balance));
+      setLayer2Balance(formatBalance(l2Balance));
+    } catch (error) {
+      console.error("Error fetching balances:", error);
+      setError('Failed to fetch balances');
+      setLayer1Balance("0.000000");
+      setLayer2Balance("0.000000");
+    }
+  };
+
+  const fetchTransactions = async (address: string) => {
     if (!address) return;
 
     try {
       setLoading(true);
       const txHistory = await getTransactionHistory(address);
-      setTransactions(txHistory);
+      setTransactions(txHistory.map(tx => ({ ...tx, type: tx.type || 'transfer' })));
+      await fetchBalances(address);
     } catch (error) {
-      console.error("Error fetching transaction data:", error);
+      console.error("Error fetching transactions:", error);
+      toast({
+        title: "Error",
+        description: "Failed to fetch transaction history",
+        variant: "destructive",
+      });
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => {
-    if (address) {
-      fetchData();
-      // Refresh every 10 seconds
-      const interval = setInterval(fetchData, 10000);
-      return () => clearInterval(interval);
+  const handleSearch = async () => {
+    if (!searchAddress) {
+      setError('Please enter an address');
+      return;
     }
-  }, [address]);
 
-  useEffect(() => {
-    let unsubscribe: (() => void) | undefined;
+    setLoading(true);
+    setError('');
 
-    const loadTransactions = async () => {
-      if (!address) return;
-
-      setLoading(true);
-      try {
-        // Subscribe to transaction events
-        unsubscribe = await subscribeToTransactionEvents(async (event: TransactionEvent) => {
-          if (event.eventName === "TransactionSubmitted") {
-            const tx = event.args;
-            const receipt = await getTransactionStatus(tx.transactionHash);
-
-            setTransactions(prev => {
-              const existingTx = prev.find(t => t.hash === tx.transactionHash);
-              if (existingTx) {
-                return prev.map(t =>
-                  t.hash === tx.transactionHash
-                    ? { ...t, status: receipt.status, gasPrice: receipt.effectiveGasPrice ? receipt.effectiveGasPrice.toString() : t.gasPrice }
-                    : t
-                );
-              }
-
-              return [{
-                hash: tx.transactionHash,
-                from: tx.from,
-                to: tx.to,
-                value: tx.value.toString(),
-                status: receipt.status,
-                gasPrice: receipt.effectiveGasPrice ? receipt.effectiveGasPrice.toString() : '0',
-                timestamp: Date.now()
-              }, ...prev];
-            });
-          }
-        });
-
-        // Load initial transactions from localStorage
-        const savedTransactions = localStorage.getItem(`transactions_${address}`);
-        if (savedTransactions) {
-          const parsedTransactions = JSON.parse(savedTransactions);
-          setTransactions(parsedTransactions);
-
-          // Update status for all transactions
-          for (const tx of parsedTransactions) {
-            const receipt = await getTransactionStatus(tx.hash);
-            setTransactions(prev =>
-              prev.map(t =>
-                t.hash === tx.hash
-                  ? { ...t, status: receipt.status, gasPrice: receipt.effectiveGasPrice ? receipt.effectiveGasPrice.toString() : t.gasPrice }
-                  : t
-              )
-            );
-          }
-        }
-      } catch (error) {
-        console.error("Failed to load transactions:", error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadTransactions();
-
-    // Save transactions to localStorage when they change
-    const saveInterval = setInterval(() => {
-      if (address) {
-        localStorage.setItem(`transactions_${address}`, JSON.stringify(transactions));
-      }
-    }, 30000); // Save every 30 seconds
-
-    return () => {
-      if (unsubscribe) unsubscribe();
-      clearInterval(saveInterval);
-    };
-  }, [address]);
-
-  const filteredTransactions = transactions.filter((tx) => {
-    if (activeTab === "all") return true;
-    return tx.status === activeTab;
-  });
-
-  const formatAddress = (addr: string) => {
-    return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
-  };
-
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'confirmed':
-        return 'text-green-500';
-      case 'pending':
-        return 'text-yellow-500';
-      case 'failed':
-        return 'text-red-500';
-      default:
-        return 'text-gray-500';
-    }
-  };
-
-  const handleViewBatchDetails = async (batchId: string) => {
     try {
-      const batchTransactions = await getBatchTransactions(batchId);
-      const merkleTree = createMerkleTreeFromTransactions(batchTransactions);
-      const merkleRoot = merkleTree.getRoot();
+      await Promise.all([
+        fetchBalances(searchAddress),
+        fetchTransactions(searchAddress)
+      ]);
+    } catch (err) {
+      console.error('Error during search:', err);
+      setError('Failed to fetch data');
+    } finally {
+      setLoading(false);
+    }
+  };
 
-      setSelectedBatch({
-        id: batchId,
-        transactions: batchTransactions,
-        merkleRoot: merkleRoot,
-        merkleProof: merkleTree.getProof(batchTransactions[0]) // Example proof for first transaction
-      });
-      setShowBatchDetails(true);
-    } catch (error) {
-      console.error("Error fetching batch details:", error);
-      toast({
-        title: "Error",
-        description: "Failed to fetch batch details",
-        variant: "destructive",
-      });
+  const getStatusBadge = (status: string) => {
+    switch (status.toLowerCase()) {
+      case 'pending':
+        return <Badge variant="secondary">Pending</Badge>;
+      case 'completed':
+      case 'confirmed':
+        return <Badge variant="default">Completed</Badge>;
+      case 'failed':
+        return <Badge variant="destructive">Failed</Badge>;
+      default:
+        return <Badge variant="outline">{status}</Badge>;
     }
   };
 
   const formatTimestamp = (timestamp: number) => {
-    return new Date(timestamp * 1000).toLocaleString();
+    return formatDistanceToNow(new Date(timestamp * 1000), { addSuffix: true });
   };
 
+  const getTransactionType = (type: string) => {
+    switch (type.toLowerCase()) {
+      case 'deposit':
+        return 'Layer 1 → Layer 2';
+      case 'withdraw':
+        return 'Layer 2 → Layer 1';
+      case 'transfer':
+        return 'Layer 2 Transfer';
+      default:
+        return type;
+    }
+  };
+
+  if (!address) {
+    return (
+      <Card className="glass-card border border-white/10 backdrop-blur-md bg-black/30">
+        <CardContent className="py-8">
+          <div className="text-center text-white/70">
+            Enter a wallet address to view transaction history
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
-    <Card className="w-full">
+    <Card className="glass-card border border-white/10 backdrop-blur-md bg-black/30">
       <CardHeader>
-        <CardTitle>Transaction History</CardTitle>
-        <CardDescription>
-          View your Layer 2 transaction history and batch details
+        <CardTitle className="text-2xl bg-gradient-to-r from-purple-400 to-pink-500 bg-clip-text text-transparent">
+          Account Details
+        </CardTitle>
+        <CardDescription className="text-white/70">
+          View account balances and transaction history
         </CardDescription>
       </CardHeader>
       <CardContent>
-        {loading ? (
-          <p className="text-center py-4">Loading transactions...</p>
-        ) : transactions.length === 0 ? (
-          <p className="text-center py-4">No transactions found</p>
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Hash</TableHead>
-                <TableHead>From</TableHead>
-                <TableHead>To</TableHead>
-                <TableHead>Value</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Gas Price</TableHead>
-                <TableHead>Timestamp</TableHead>
-                <TableHead>Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {transactions.map((tx) => (
-                <TableRow key={tx.hash}>
-                  <TableCell className="font-mono">{tx.hash.slice(0, 8)}...</TableCell>
-                  <TableCell className="font-mono">{tx.from.slice(0, 6)}...{tx.from.slice(-4)}</TableCell>
-                  <TableCell className="font-mono">{tx.to.slice(0, 6)}...{tx.to.slice(-4)}</TableCell>
-                  <TableCell>{formatEther(tx.value)} ETH</TableCell>
-                  <TableCell>
-                    <Badge variant={tx.status === "confirmed" ? "success" : "destructive"}>
-                      {tx.status}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>{formatEther(tx.gasPrice)} ETH</TableCell>
-                  <TableCell>{formatTimestamp(tx.timestamp)}</TableCell>
-                  <TableCell>
-                    {tx.batchId && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleViewBatchDetails(tx.batchId!)}
-                      >
-                        View Batch
-                      </Button>
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        )}
-      </CardContent>
+        <div className="space-y-4">
+          <h2 className="text-2xl font-bold">Transaction Tracker</h2>
 
-      <Dialog open={showBatchDetails} onOpenChange={setShowBatchDetails}>
-        <DialogContent className="max-w-3xl">
-          <DialogHeader>
-            <DialogTitle>Batch Details</DialogTitle>
-            <DialogDescription>
-              View batch transactions and Merkle tree information
-            </DialogDescription>
-          </DialogHeader>
-          {selectedBatch && (
-            <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <h3 className="font-semibold">Batch ID</h3>
-                  <p className="font-mono">{selectedBatch.id}</p>
-                </div>
-                <div>
-                  <h3 className="font-semibold">Merkle Root</h3>
-                  <p className="font-mono">{selectedBatch.merkleRoot}</p>
-                </div>
-              </div>
+          <div className="flex gap-4">
+            <Input
+              placeholder="Enter address"
+              value={searchAddress}
+              onChange={(e) => setSearchAddress(e.target.value)}
+            />
+            <Button onClick={handleSearch} disabled={loading}>
+              {loading ? 'Searching...' : 'Search'}
+            </Button>
+          </div>
 
-              <div>
-                <h3 className="font-semibold mb-2">Merkle Proof (Example)</h3>
-                <div className="bg-muted p-2 rounded-md">
-                  <pre className="text-sm overflow-x-auto">
-                    {JSON.stringify(selectedBatch.merkleProof, null, 2)}
-                  </pre>
-                </div>
-              </div>
+          {error && (
+            <div className="text-red-500">{error}</div>
+          )}
 
-              <div>
-                <h3 className="font-semibold mb-2">Transactions</h3>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>From</TableHead>
-                      <TableHead>To</TableHead>
-                      <TableHead>Value</TableHead>
-                      <TableHead>Status</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {selectedBatch.transactions.map((tx, index) => (
-                      <TableRow key={index}>
-                        <TableCell className="font-mono">{tx.from.slice(0, 6)}...{tx.from.slice(-4)}</TableCell>
-                        <TableCell className="font-mono">{tx.to.slice(0, 6)}...{tx.to.slice(-4)}</TableCell>
-                        <TableCell>{formatEther(tx.value)} ETH</TableCell>
-                        <TableCell>
-                          <Badge variant={tx.status === "confirmed" ? "success" : "destructive"}>
-                            {tx.status}
-                          </Badge>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
+          {searchAddress && (
+            <div className="grid grid-cols-2 gap-4">
+              <Card className="p-4 bg-black/20 border border-white/10">
+                <h3 className="text-lg font-medium text-white mb-2">Layer 1 Balance</h3>
+                <p className="text-2xl font-bold text-white">
+                  {Number(layer1Balance).toFixed(6)} ETH
+                </p>
+              </Card>
+              <Card className="p-4 bg-black/20 border border-white/10">
+                <h3 className="text-lg font-medium text-white mb-2">Layer 2 Balance</h3>
+                <p className="text-2xl font-bold text-white">
+                  {Number(layer2Balance).toFixed(6)} ETH
+                </p>
+              </Card>
             </div>
           )}
-        </DialogContent>
-      </Dialog>
+
+          {transactions.length > 0 && (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="text-white/70">Type</TableHead>
+                  <TableHead className="text-white/70">From</TableHead>
+                  <TableHead className="text-white/70">To</TableHead>
+                  <TableHead className="text-white/70">Amount (ETH)</TableHead>
+                  <TableHead className="text-white/70">Status</TableHead>
+                  <TableHead className="text-white/70">Batch ID</TableHead>
+                  <TableHead className="text-white/70">Timestamp</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {transactions.map((tx) => (
+                  <TableRow key={tx.hash}>
+                    <TableCell className="text-white/70">{getTransactionType(tx.type)}</TableCell>
+                    <TableCell className="text-white/70 font-mono text-sm">
+                      {tx.from.slice(0, 6)}...{tx.from.slice(-4)}
+                    </TableCell>
+                    <TableCell className="text-white/70 font-mono text-sm">
+                      {tx.to.slice(0, 6)}...{tx.to.slice(-4)}
+                    </TableCell>
+                    <TableCell className="text-white/70">{formatEther(tx.value)}</TableCell>
+                    <TableCell>{getStatusBadge(tx.status)}</TableCell>
+                    <TableCell>{tx.batchId || '-'}</TableCell>
+                    <TableCell className="text-white/70">{formatTimestamp(tx.timestamp)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+
+          {searchAddress && transactions.length === 0 && !loading && (
+            <div className="text-center py-4">
+              No transactions found for this address
+            </div>
+          )}
+        </div>
+      </CardContent>
     </Card>
   );
 }

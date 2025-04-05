@@ -1,0 +1,58 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Batch {
+  id                String   @id @default(uuid())
+  batchId           String   @unique
+  transactionsRoot  String
+  timestamp         DateTime @default(now())
+  verified          Boolean  @default(false)
+  finalized         Boolean  @default(false)
+  rejected          Boolean  @default(false)
+  rejectionReason   String?
+  transactions      BatchTransaction[]
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+model BatchTransaction {
+  id        String   @id @default(uuid())
+  from      String
+  to        String
+  value     String
+  status    String   @default("pending")
+  timestamp DateTime @default(now())
+  batchId   String
+  batch     Batch    @relation(fields: [batchId], references: [batchId])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Layer2Balance {
+  id              String   @id @default(uuid())
+  userAddress     String
+  contractAddress String
+  balance         String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([userAddress, contractAddress])
+}
+
+model ContractDeployment {
+  id        String   @id @default(uuid())
+  address   String   @unique
+  network   String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+} 

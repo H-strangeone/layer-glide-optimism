@@ -74,11 +74,11 @@ export const submitTransactions = async (transactions: Transaction[]): Promise<s
       },
       body: JSON.stringify({ transactions }),
     });
-    
+
     if (!response.ok) {
       throw new Error("Failed to submit transactions");
     }
-    
+
     const { batchId } = await response.json();
     return batchId;
   } catch (error) {

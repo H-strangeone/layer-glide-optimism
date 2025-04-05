@@ -127,32 +127,51 @@ export const getContract = async () => {
 // Get transaction history for an address
 export const getTransactionHistory = async (address: string): Promise<TransactionHistory[]> => {
   try {
-    const contract = await getContract();
-    const provider = await getProvider();
+    // First try to get from the blockchain
+    try {
+      const contract = await getContract();
+      const provider = await getProvider();
 
-    // Get all TransactionExecuted events for this address
-    const filter = contract.filters.TransactionExecuted(address);
-    const events = await contract.queryFilter(filter);
+      // Get all TransactionExecuted events for this address
+      const filter = contract.filters.TransactionExecuted(address);
+      const events = await contract.queryFilter(filter);
 
-    // Convert events to TransactionHistory format
-    const transactions = await Promise.all(events.map(async (event) => {
-      const block = await provider.getBlock(event.blockNumber);
-      // Cast event to EventLog to access args
-      const eventLog = event as ethers.EventLog;
-      return {
-        hash: event.transactionHash,
-        from: eventLog.args[0], // sender
-        to: eventLog.args[1],   // recipient
-        value: eventLog.args[2].toString(), // amount
-        status: "confirmed", // Since we're getting past events, they're confirmed
-        gasPrice: eventLog.args[3]?.toString() || "0", // gas price if available
-        timestamp: block?.timestamp || Math.floor(Date.now() / 1000)
-      };
-    }));
+      // Convert events to TransactionHistory format
+      const transactions = await Promise.all(events.map(async (event) => {
+        const block = await provider.getBlock(event.blockNumber);
+        // Cast event to EventLog to access args
+        const eventLog = event as ethers.EventLog;
+        return {
+          hash: event.transactionHash,
+          from: eventLog.args[0], // sender
+          to: eventLog.args[1],   // recipient
+          value: eventLog.args[2].toString(), // amount
+          status: "confirmed", // Since we're getting past events, they're confirmed
+          gasPrice: eventLog.args[3]?.toString() || "0", // gas price if available
+          timestamp: block?.timestamp || Math.floor(Date.now() / 1000)
+        };
+      }));
 
-    return transactions;
+      return transactions;
+    } catch (error) {
+      console.error("Error getting transaction history from blockchain:", error);
+
+      // If blockchain fails, try to get from the API
+      try {
+        const response = await fetch(`http://localhost:5500/api/transactions?address=${address}`);
+        if (!response.ok) {
+          throw new Error(`API error: ${response.status}`);
+        }
+
+        const data = await response.json();
+        return data;
+      } catch (apiError) {
+        console.error("Error getting transaction history from API:", apiError);
+        return [];
+      }
+    }
   } catch (error) {
-    console.error("Error getting transaction history:", error);
+    console.error("Error fetching transaction history:", error);
     return [];
   }
 };
@@ -391,17 +410,85 @@ export const reportFraudWithMerkleProof = async (batchId: number, proof: string[
   }
 };
 
-// Get Layer 2 balance
-export const getLayer2Balance = async (address: string) => {
+// Get Layer 1 balance
+export const getLayer1Balance = async (address: string): Promise<string> => {
   try {
-    const contract = await getContract();
-    const balance = await contract.balances(address);
-    return formatEther(balance);
+    // First try to get balance from the blockchain
+    try {
+      const provider = await getProvider();
+      const balance = await provider.getBalance(address);
+      return formatEther(balance);
+    } catch (error) {
+      console.error("Error getting Layer 1 balance from blockchain:", error);
+
+      // If blockchain fails, try to get from the API
+      try {
+        const response = await fetch(`http://localhost:5500/api/balance/${address}`);
+        if (!response.ok) {
+          throw new Error(`API error: ${response.status}`);
+        }
+
+        const data = await response.json();
+        return data.layer1Balance || "0";
+      } catch (apiError) {
+        console.error("Error getting Layer 1 balance from API:", apiError);
+        return "0";
+      }
+    }
   } catch (error) {
-    console.error("Error getting Layer 2 balance:", error);
-    throw error;
+    console.error("Error fetching Layer 1 balance:", error);
+    return "0";
   }
 };
+
+// Get Layer 2 balance
+export const getLayer2Balance = async (address: string): Promise<string> => {
+  try {
+    // First try to get balance from the blockchain
+    try {
+      const contract = await getContract();
+      const balance = await contract.balances(address);
+      return formatEther(balance);
+    } catch (error) {
+      console.error("Error getting Layer 2 balance from blockchain:", error);
+
+      // If blockchain fails, try to get from the API
+      try {
+        const response = await fetch(`http://localhost:5500/api/balance/${address}`);
+        if (!response.ok) {
+          throw new Error(`API error: ${response.status}`);
+        }
+
+        const data = await response.json();
+        return data.layer2Balance || "0";
+      } catch (apiError) {
+        console.error("Error getting Layer 2 balance from API:", apiError);
+        return "0";
+      }
+    }
+  } catch (error) {
+    console.error("Error fetching Layer 2 balance:", error);
+    return "0";
+  }
+};
+
+// Format large numbers without scientific notation
+export function formatLargeNumber(value: string): string {
+  try {
+    const num = Number(value);
+    if (isNaN(num)) return "0.000000";
+
+    return new Intl.NumberFormat('en-US', {
+      minimumFractionDigits: 6,
+      maximumFractionDigits: 6,
+      useGrouping: true,
+      notation: 'standard'
+    }).format(num);
+  } catch (error) {
+    console.error("Error formatting number:", error);
+    return "0.000000";
+  }
+}
 
 // Get all batches (admin only)
 export const getBatches = async (): Promise<Batch[]> => {
@@ -689,18 +776,6 @@ const updateLayer2Balance = async (userAddress: string, contractAddress: string,
   } catch (error) {
     console.error('Error updating Layer 2 balance:', error);
     throw error;
-  }
-};
-
-// Get Layer 1 balance for a user
-export const getLayer1Balance = async (address: string): Promise<string> => {
-  try {
-    const provider = await getProvider();
-    const balance = await provider.getBalance(address);
-    return formatEther(balance);
-  } catch (error) {
-    console.error('Error getting Layer 1 balance:', error);
-    return '0';
   }
 };
 

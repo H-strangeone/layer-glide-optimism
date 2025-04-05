@@ -1,4 +1,3 @@
-
 # Layer 2 Optimistic Rollup
 
 This project implements a Layer 2 scaling solution using Optimistic Rollups on Ethereum. It includes a frontend interface, backend server, and smart contract for managing off-chain transactions.
@@ -22,6 +21,10 @@ This project implements a Layer 2 scaling solution using Optimistic Rollups on E
 
    # Your wallet's private key (NEVER share this or commit to git)
    PRIVATE_KEY=your_wallet_private_key_here
+
+   # Contract address
+   CONTRACT_ADDRESS=0x5FC8d32690cc91D4c39d9d3abcBD16989F875707
+   VITE_CONTRACT_ADDRESS=0x5FC8d32690cc91D4c39d9d3abcBD16989F875707
    ```
 
 2. Replace `your_alchemy_api_key_here` with your actual Alchemy API key.
@@ -40,7 +43,8 @@ This project implements a Layer 2 scaling solution using Optimistic Rollups on E
    ```
 
 3. The deployment script will output the contract address. Update this address in:
-   - `src/lib/ethers.ts` in the CONTRACT_ADDRESS object
+   - `.env` file (both CONTRACT_ADDRESS and VITE_CONTRACT_ADDRESS)
+   - `src/config/contract.ts`
 
 ### Running the Frontend
 
